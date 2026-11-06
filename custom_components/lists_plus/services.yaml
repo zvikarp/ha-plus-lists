@@ -1,0 +1,35 @@
+execute:
+  name: Update a list
+  description: Change existing to-do items or their HA+ metadata. Use the current revision for metadata changes. See the repository API documentation.
+  fields:
+    entity_id:
+      name: List
+      required: true
+      selector:
+        entity:
+          domain: todo
+    action:
+      name: Action
+      required: true
+      selector:
+        select:
+          options:
+            - set_list
+            - set_item
+            - add_field
+            - delete_field
+            - add_item
+            - rename_item
+            - complete_item
+            - delete_item
+    payload:
+      name: Values
+      required: true
+      selector:
+        object:
+    revision:
+      name: Metadata revision
+      selector:
+        number:
+          min: 0
+          mode: box

@@ -1,0 +1,12 @@
+{
+  "title": "HA+ Lists",
+  "config": {
+    "step": {
+      "user": {
+        "title": "HA+ Lists",
+        "description": "Add groups, tags, custom fields and assignments to your existing to-do lists. Your original lists stay in Home Assistant. After setup, open HA+ Lists in the sidebar. Create lists using Local to-do or another to-do integration."
+      }
+    },
+    "abort": {"already_configured": "HA+ Lists is already configured."}
+  }
+}
