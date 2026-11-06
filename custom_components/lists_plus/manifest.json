@@ -2,9 +2,17 @@
   "domain": "lists_plus",
   "name": "HA+ Lists",
   "version": "0.1.0",
-  "codeowners": ["@zvikarp"],
+  "codeowners": [
+    "@zvikarp"
+  ],
   "config_flow": true,
-  "dependencies": ["frontend", "http", "panel_custom", "websocket_api", "todo"],
+  "dependencies": [
+    "frontend",
+    "http",
+    "panel_custom",
+    "websocket_api",
+    "todo"
+  ],
   "documentation": "https://github.com/zvikarp/ha-plus-lists",
   "issue_tracker": "https://github.com/zvikarp/ha-plus-lists/issues",
   "integration_type": "service",
