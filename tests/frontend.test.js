@@ -58,7 +58,12 @@ function choose(panel, key, label) {
 }
 
 test("groups existing lists and items; renders tags, quantity and person", async () => {
-  const { panel } = await setup();
+  const { panel, window } = await setup();
+  const logo = await window.customIcons["lists-plus"].getIcon("logo");
+  const svg = await readFile(new URL("../custom_components/lists_plus/brand/icon-monochrome.svg", import.meta.url), "utf8");
+  assert.equal(logo.path, svg.match(/ d="([^"]+)"/)[1]);
+  assert.equal(logo.viewBox, "0 0 513 512");
+  assert.equal(await window.customIcons["lists-plus"].getIcon("missing"), undefined);
   const text = [...panel.shadowRoot.children].map(node => node.textContent).join(" ");
   for (const label of ["Household", "Groceries", "Dairy", "cold", "Zvi", "Quantity: 2", "Completed"]) assert.ok(text.includes(label), label);
   assert.equal(panel.shadowRoot.querySelectorAll(".item").length, 2);

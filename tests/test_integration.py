@@ -242,6 +242,9 @@ async def test_real_frontend_registration(hass, loaded, hass_client):
 
     await async_register_frontend(hass)
     assert hass.data["frontend_panels"]["ha-plus-lists"].sidebar_title == "HA+ Lists"
+    assert (
+        hass.data["frontend_panels"]["ha-plus-lists"].sidebar_icon == "lists-plus:logo"
+    )
     client = await hass_client()
     response = await client.get("/lists_plus/lists-plus.js")
     assert response.status == 200

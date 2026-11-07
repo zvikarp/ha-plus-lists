@@ -1,5 +1,7 @@
 # HA+ Lists
 
+<img src="custom_components/lists_plus/brand/icon.png" alt="HA+ Lists" width="140">
+
 Groups, tags, custom fields and assignments for **your existing Home Assistant to-do lists**. A local companion integration in the [HA+ family](https://github.com/zvikarp/ha-plus), with a bundled sidebar panel and dashboard card that follow Home Assistant's theme.
 
 ## What you can do

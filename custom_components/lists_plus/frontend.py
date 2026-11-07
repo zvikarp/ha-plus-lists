@@ -34,7 +34,7 @@ async def async_register_frontend(hass):
         webcomponent_name="lists-plus-panel",
         frontend_url_path="ha-plus-lists",
         sidebar_title="HA+ Lists",
-        sidebar_icon="mdi:clipboard-list-outline",
+        sidebar_icon="lists-plus:logo",
         module_url=url,
         require_admin=False,
         config={},
