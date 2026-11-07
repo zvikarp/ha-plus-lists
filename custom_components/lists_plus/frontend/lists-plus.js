@@ -8,120 +8,325 @@ window.customIcons["lists-plus"] = {
     : undefined,
 };
 
-let nextId = 0;
+// Load HA's own lazily registered controls when this panel is opened directly.
+let nativeComponents;
+
+async function loadNativeComponents(host) {
+  const required = ["ha-form", "ha-checkbox", "ha-dialog", "ha-icon-button"];
+  if (required.every((name) => customElements.get(name))) return;
+  if (!nativeComponents) {
+    nativeComponents = (async () => {
+      if (!window.loadCardHelpers) {
+        // Reuse the owning HA router's dashboard loader without navigating or
+        // constructing a second dashboard. Its bundle exposes loadCardHelpers.
+        let resolver = host;
+        while (resolver && resolver.localName !== "partial-panel-resolver") {
+          resolver = resolver.parentElement || resolver.getRootNode().host;
+        }
+        const dashboard = Object.values(resolver?.routerOptions?.routes || {})
+          .find((route) => route.tag === "ha-panel-lovelace");
+        if (!dashboard?.load) {
+          throw new Error("Home Assistant's dashboard controls could not load. Reload and try again.");
+        }
+        await dashboard.load();
+      }
+      const helpers = await window.loadCardHelpers();
+      const entities = helpers.createCardElement({ type: "entities", entities: [] });
+      await entities.constructor.getConfigElement();
+      helpers.createCardElement({ type: "todo-list", entity: "todo.lists_plus" });
+      let loadingTimeout;
+      try {
+        await Promise.race([
+          customElements.whenDefined("hui-todo-list-card"),
+          new Promise((_, reject) => {
+            loadingTimeout = setTimeout(() => reject(new Error("Home Assistant's to-do controls could not load. Reload and try again.")), 15000);
+          }),
+        ]);
+      } finally {
+        clearTimeout(loadingTimeout);
+      }
+      for (const name of required) {
+        if (!customElements.get(name)) {
+          throw new Error(`Home Assistant could not load ${name}. Reload and try again.`);
+        }
+      }
+    })().catch((error) => {
+      nativeComponents = undefined;
+      throw error;
+    });
+  }
+  await nativeComponents;
+}
+
 function el(tag, text, className) {
   const node = document.createElement(tag);
   if (text !== undefined) node.textContent = text;
   if (className) node.className = className;
   return node;
 }
+
 function icon(name) {
   const node = el("ha-icon");
+  node.icon = name;
   node.setAttribute("icon", name);
   return node;
 }
-function button(text, handler, disabled = false, className) {
-  const node = el("button", text, className);
+
+function actionButton(label, handler, disabled = false, appearance = "plain") {
+  // HA migrated from mwc-button to ha-button. Use the registered native control.
+  const modern = Boolean(customElements.get("ha-button"));
+  const node = el(modern ? "ha-button" : "mwc-button", label);
   node.type = "button";
   node.disabled = disabled;
-  node.addEventListener("click", handler);
+  if (modern) {
+    node.appearance = appearance === "danger" ? "plain" : appearance;
+    node.variant = appearance === "danger" ? "danger" : "brand";
+  } else {
+    node.raised = appearance === "accent";
+    if (appearance === "danger") node.classList.add("destructive");
+  }
+  node.addEventListener("click", () => {
+    if (!node.disabled) handler();
+  });
   return node;
 }
-function when(value) { return new Date(value).toLocaleString(); }
 
-/** Themed, keyboard-operable listbox: no platform-default select menus. */
-function dropdown(key, label, options, value, change, disabled) {
-  const field = el("div", undefined, "field");
-  const labelNode = el("span", label, "field-label");
-  labelNode.id = `lists-label-${++nextId}`;
-  const trigger = button(undefined, () => setOpen(menu.hidden), disabled, "combobox");
-  trigger.dataset.control = key;
-  trigger.setAttribute("role", "combobox");
-  trigger.setAttribute("aria-labelledby", labelNode.id);
-  trigger.setAttribute("aria-haspopup", "listbox");
-  trigger.setAttribute("aria-expanded", "false");
-  trigger.append(el("span", options.find(option => option.value === value)?.label || "Choose…"), icon("mdi:chevron-down"));
-  const menu = el("div", undefined, "listbox");
-  menu.id = `lists-list-${nextId}`;
-  menu.hidden = true;
-  menu.setAttribute("role", "listbox");
-  menu.setAttribute("aria-labelledby", labelNode.id);
-  trigger.setAttribute("aria-controls", menu.id);
-  const choices = options.map(option => {
-    const item = button(option.label, () => {
-      setOpen(false);
-      change(option.value);
-    }, false, "option");
-    item.setAttribute("role", "option");
-    item.setAttribute("aria-selected", String(option.value === value));
-    item.tabIndex = -1;
-    menu.append(item);
-    return item;
+function iconButton(label, name, handler, disabled = false) {
+  const node = el("ha-icon-button");
+  node.label = label;
+  node.disabled = disabled;
+  node.append(icon(name));
+  node.addEventListener("click", () => {
+    if (!node.disabled) handler();
   });
-  function setOpen(open) {
-    menu.hidden = !open;
-    trigger.setAttribute("aria-expanded", String(open));
-    if (open) choices[Math.max(0, options.findIndex(option => option.value === value))]?.focus();
-    else trigger.focus();
+  return node;
+}
+
+function textField(label, value, change) {
+  const node = el(customElements.get("ha-input") ? "ha-input" : "ha-textfield");
+  node.label = label;
+  node.placeholder = label;
+  node.value = value;
+  node.setAttribute("aria-label", label);
+  node.addEventListener("input", () => change(node.value));
+  return node;
+}
+
+function nativeForm(hass, schema, data, change) {
+  const form = el("ha-form");
+  form.hass = hass;
+  form.schema = schema;
+  form.data = data;
+  form.computeLabel = (field) => field.label;
+  form.computeHelper = (field) => field.helper;
+  form.addEventListener("value-changed", (event) => {
+    event.stopPropagation();
+    form.data = event.detail.value;
+    change(event.detail.value);
+  });
+  return form;
+}
+
+function selectField(name, label, choices) {
+  return {
+    name,
+    label,
+    selector: { select: { mode: "dropdown", options: choices } },
+  };
+}
+
+function options(choices) {
+  return choices.map(([value, label]) => ({ value, label }));
+}
+
+function feature(list, bit) {
+  return list.can_edit && !list.error && (list.features & bit) !== 0;
+}
+
+function metadataSchema(list, scope, people) {
+  const schema = [
+    { name: "group", label: scope === "list" ? "List group" : "Item group", selector: { text: {} } },
+    { name: "tags", label: "Tags", selector: { text: { multiple: true } } },
+  ];
+  if (scope === "item") {
+    schema.push({
+      name: "assignee",
+      label: "Assigned to",
+      selector: { entity: { domain: "person", include_entities: people.map((person) => person.id) } },
+    });
   }
-  field.addEventListener("keydown", event => {
-    const index = choices.indexOf(event.target);
-    if (["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) {
-      event.preventDefault();
-      if (menu.hidden) setOpen(true);
-      else {
-        const target = event.key === "Home" ? 0 : event.key === "End" ? choices.length - 1 : (index + (event.key === "ArrowDown" ? 1 : -1) + choices.length) % choices.length;
-        choices[target]?.focus();
-      }
-    } else if (event.key === "Escape") {
-      event.preventDefault();
-      setOpen(false);
+  for (const field of list.fields.filter((field) => field.scope === scope)) {
+    let selector;
+    switch (field.type) {
+      case "number":
+        selector = { number: { mode: "box", step: "any" } };
+        break;
+      case "area":
+        selector = { area: {} };
+        break;
+      case "boolean":
+        selector = { select: { mode: "dropdown", options: options([["unset", "Not set"], ["true", "Yes"], ["false", "No"]]) } };
+        break;
+      default:
+        selector = { text: {} };
     }
-  });
-  field.addEventListener("focusout", event => {
-    if (!field.contains(event.relatedTarget)) {
-      menu.hidden = true;
-      trigger.setAttribute("aria-expanded", "false");
+    schema.push({ name: `property_${field.id}`, label: field.name, selector });
+  }
+  return schema;
+}
+
+function metadataFormData(metadata, list, scope) {
+  const data = { group: metadata.group || "", tags: [...(metadata.tags || [])] };
+  if (scope === "item" && metadata.assignee) data.assignee = metadata.assignee;
+  for (const field of list.fields.filter((field) => field.scope === scope)) {
+    const value = metadata.properties?.[field.id];
+    if (value !== undefined) {
+      data[`property_${field.id}`] = field.type === "boolean" ? String(value) : value;
+    } else if (field.type === "boolean") {
+      data[`property_${field.id}`] = "unset";
     }
-  });
-  field.append(labelNode, trigger, menu);
-  return field;
+  }
+  return data;
+}
+
+function metadataFromForm(data, list, scope) {
+  const result = { group: data.group || "", tags: data.tags || [], properties: {} };
+  if (scope === "item") result.assignee = data.assignee || "";
+  for (const field of list.fields.filter((field) => field.scope === scope)) {
+    const value = data[`property_${field.id}`];
+    if (value === undefined || value === null || value === "" || (field.type === "boolean" && value === "unset")) continue;
+    result.properties[field.id] = field.type === "boolean" ? value === "true" : value;
+  }
+  return result;
 }
 
 const STYLES = `
-:host{display:block;container-type:inline-size;color:var(--primary-text-color);font-family:var(--paper-font-body1_-_font-family,Roboto,sans-serif)}
-*{box-sizing:border-box}header{display:flex;align-items:center;gap:12px;min-height:64px;padding:12px 16px;background:var(--app-header-background-color);color:var(--app-header-text-color)}
-h1{flex:1;font-size:20px;font-weight:400;margin:0}h2{font-size:22px;font-weight:500;margin:0}h3{font-size:16px;font-weight:500;margin:0 0 12px}p{line-height:1.5}a{color:var(--primary-color)}
-main{max-width:1200px;margin:auto;padding:24px}.layout{display:grid;grid-template-columns:260px minmax(0,1fr);gap:24px}.content,.field{min-width:0}
-ha-card{display:block;padding:20px;margin-bottom:16px;background:var(--ha-card-background,var(--card-background-color));border:var(--ha-card-border-width,1px) solid var(--ha-card-border-color,var(--divider-color));border-radius:var(--ha-card-border-radius,16px);box-shadow:var(--ha-card-box-shadow,none)}
-.row,.actions,.chips{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.row h2,.row .grow{flex:1;min-width:0}.muted,.field-label{color:var(--secondary-text-color);font-size:14px}.field-label{display:block;margin-bottom:8px}.field{margin-bottom:16px}
-button,input{font:inherit}button{min-height:44px;padding:10px 16px;border:0;border-radius:999px;background:var(--secondary-background-color);color:var(--primary-color);font-weight:500;cursor:pointer}button:hover{filter:brightness(.96)}button.primary{background:var(--primary-color);color:var(--text-primary-color,#fff)}button.danger{color:var(--error-color)}button:disabled{opacity:.5;cursor:default}button:focus-visible,input:focus-visible,a:focus-visible{outline:2px solid var(--primary-color);outline-offset:3px}
-.icon-button{display:grid;place-items:center;width:44px;height:44px;min-width:44px;padding:0;color:inherit;background:transparent}.icon-button:hover{background:var(--secondary-background-color)}ha-icon{flex-shrink:0}
-input{min-height:48px;width:100%;min-width:0;border:1px solid var(--divider-color);border-radius:12px;padding:10px 14px;color:var(--primary-text-color);background:var(--secondary-background-color)}input[type=checkbox]{width:24px;height:24px;min-height:24px;accent-color:var(--primary-color);cursor:pointer}
-.list-button{display:block;width:100%;text-align:start;border-radius:12px;color:var(--primary-text-color);background:transparent;overflow-wrap:anywhere}.list-button.active{background:var(--secondary-background-color);color:var(--primary-color)}nav h3{margin:16px 12px 8px}.list-name{display:block}.list-count{font-size:13px;color:var(--secondary-text-color)}
-.chip{display:inline-flex;max-width:100%;padding:4px 10px;border-radius:999px;background:var(--secondary-background-color);color:var(--secondary-text-color);font-size:12px;overflow-wrap:anywhere}.chips{margin-top:8px}.filters{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:20px}.filters .field{margin:0}.filters input{grid-column:1/-1}
-.add{display:flex;gap:8px;margin:20px 0}.add input{flex:1}.item{display:flex;align-items:start;gap:12px;padding:16px 0;border-bottom:1px solid var(--divider-color)}.item:last-child{border:0}.item .grow{flex:1;min-width:0}.item-name{display:block;font-size:16px;overflow-wrap:anywhere}.item.completed .item-name{text-decoration:line-through;color:var(--secondary-text-color)}.item input{margin-top:7px}.section-title{margin:24px 0 0}.details{margin-top:8px;overflow-wrap:anywhere;font-size:13px;color:var(--secondary-text-color)}
-.notice{padding:12px 16px;margin:0 0 16px;background:var(--secondary-background-color);border-radius:12px;overflow-wrap:anywhere}.error{color:var(--error-color);white-space:pre-wrap}.empty{padding:28px 8px;text-align:center;color:var(--secondary-text-color)}
-.backdrop{position:fixed;inset:0;background:#0006;z-index:20;display:flex;align-items:center;justify-content:center;padding:16px}.dialog{background:var(--card-background-color);color:var(--primary-text-color);width:560px;max-width:100%;max-height:90dvh;overflow:auto;padding:24px;border-radius:var(--ha-card-border-radius,16px);box-shadow:0 8px 32px #0004}.dialog h2{margin-bottom:20px}.dialog .actions{justify-content:flex-end;margin-top:20px}.field-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:8px 0;border-bottom:1px solid var(--divider-color)}
-.field{position:relative}.combobox{display:flex;align-items:center;gap:8px;width:100%;justify-content:space-between;text-align:start;border:1px solid var(--divider-color);border-radius:12px;color:var(--primary-text-color);min-height:48px;padding:10px 14px}.combobox span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.listbox{position:absolute;z-index:30;top:100%;left:0;right:0;margin-top:4px;max-height:240px;overflow:auto;padding:6px;background:var(--card-background-color);border:1px solid var(--divider-color);border-radius:12px;box-shadow:0 4px 16px #0003}.listbox[hidden]{display:none}.option{display:block;width:100%;text-align:start;border-radius:10px;background:transparent;color:var(--primary-text-color);white-space:normal;overflow-wrap:anywhere}.option[aria-selected=true]{color:var(--primary-color);background:var(--secondary-background-color)}
-.compact main{padding:0}.compact .layout{display:block}.compact nav{margin-bottom:16px}.compact header{display:none}
-@media(max-width:700px){main{padding:16px}.layout{grid-template-columns:minmax(0,1fr);gap:0}nav{margin-bottom:16px}nav ha-card{padding:12px}.filters{grid-template-columns:minmax(0,1fr)}.dialog{padding:20px}.row h2{font-size:20px}.add{flex-wrap:wrap}.add input{flex-basis:180px}}
-@container(max-width:700px){main{padding:16px}.layout{grid-template-columns:minmax(0,1fr);gap:0}nav{margin-bottom:16px}nav ha-card{padding:12px}.filters{grid-template-columns:minmax(0,1fr)}.dialog{padding:20px}.row h2{font-size:20px}.add{flex-wrap:wrap}.add input{flex-basis:180px}}
+  :host {
+    display: block;
+    container-type: inline-size;
+    color: var(--primary-text-color);
+    font-family: var(--ha-font-family-body, var(--paper-font-body1_-_font-family, Roboto, sans-serif));
+    font-size: var(--ha-font-size-m, 14px);
+    background: var(--primary-background-color);
+  }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  .toolbar {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    display: flex;
+    align-items: center;
+    height: var(--header-height, 64px);
+    padding: 0 12px;
+    color: var(--app-header-text-color);
+    background: var(--app-header-background-color);
+    border-bottom: 1px solid var(--divider-color);
+  }
+  .toolbar h1 {
+    flex: 1;
+    margin: 0 16px;
+    font-size: var(--ha-font-size-xl, 20px);
+    font-weight: var(--ha-font-weight-normal, 400);
+  }
+  .layout {
+    display: grid;
+    grid-template-columns: 256px minmax(0, 1fr);
+    min-height: calc(100dvh - var(--header-height, 64px));
+  }
+  nav {
+    padding: 12px 8px;
+    border-inline-end: 1px solid var(--divider-color);
+    background: var(--sidebar-background-color, var(--card-background-color));
+  }
+  nav h2 {
+    margin: 20px 16px 8px;
+    color: var(--secondary-text-color);
+    font-size: var(--ha-font-size-s, 12px);
+    font-weight: var(--ha-font-weight-medium, 500);
+  }
+  .list-button {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    width: 100%;
+    min-height: 56px;
+    padding: 8px 16px;
+    border: 0;
+    border-radius: var(--ha-border-radius-sm, 4px);
+    background: transparent;
+    color: var(--primary-text-color);
+    text-align: start;
+    font: inherit;
+    cursor: pointer;
+  }
+  .list-button:hover { background: var(--secondary-background-color); }
+  .list-button.active {
+    color: var(--primary-color);
+    background: var(--ha-color-fill-primary-quiet-resting, var(--secondary-background-color));
+  }
+  .list-name { flex: 1; overflow-wrap: anywhere; }
+  .list-count { color: var(--secondary-text-color); font-size: var(--ha-font-size-s, 12px); }
+  .list-button:focus-visible, .item-name:focus-visible {
+    outline: 2px solid var(--primary-color);
+    outline-offset: -2px;
+  }
+  .mobile-lists { display: none; padding: 16px; }
+  .content { width: 100%; max-width: 680px; min-width: 0; margin: 0 auto; padding: 24px; }
+  ha-card { display: block; overflow: hidden; }
+  .card-header { display: flex; align-items: center; gap: 4px; padding: 16px 8px 8px 24px; }
+  .card-header h2 { flex: 1; min-width: 0; margin: 0; font-size: 24px; font-weight: 400; overflow-wrap: anywhere; }
+  .list-metadata { padding: 0 24px 8px; }
+  .add { display: flex; align-items: center; gap: 8px; padding: 8px 16px 16px; }
+  .add ha-input, .add ha-textfield { flex: 1; min-width: 0; }
+  .filters { padding: 0 16px 16px; border-bottom: 1px solid var(--divider-color); }
+  .section-title { margin: 0; padding: 16px 24px 8px; color: var(--secondary-text-color); font-size: 14px; font-weight: 500; }
+  .group-title { margin: 0; padding: 12px 24px 4px; font-size: 14px; font-weight: 500; }
+  .item { display: flex; align-items: center; gap: 8px; min-height: 56px; padding: 4px 8px; }
+  .item + .item { border-top: 1px solid var(--divider-color); }
+  .item ha-checkbox { flex-shrink: 0; }
+  .item-body { flex: 1; min-width: 0; padding: 8px 0; }
+  .item-name { display: block; width: 100%; padding: 0; border: 0; background: transparent; color: inherit; font: inherit; font-size: 16px; text-align: start; overflow-wrap: anywhere; cursor: pointer; }
+  .completed .item-name { text-decoration: line-through; color: var(--secondary-text-color); }
+  .metadata, .details { color: var(--secondary-text-color); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+  .metadata { display: flex; align-items: center; flex-wrap: wrap; gap: 0 12px; }
+  .metadata ha-icon { --mdc-icon-size: 14px; margin-inline-end: 4px; vertical-align: text-bottom; }
+  .tag { color: var(--primary-color); }
+  .details { white-space: pre-wrap; }
+  .notice { display: block; margin: 16px; }
+  .empty { margin: 0; padding: 24px; color: var(--secondary-text-color); line-height: 1.5; }
+  .empty a { color: var(--primary-color); }
+  .dialog-content { padding: 8px 24px 24px; }
+  .dialog-content ha-form { display: block; }
+  .dialog-content h3 { margin: 24px 0 8px; font-size: 16px; font-weight: 500; }
+  .dialog-content p { line-height: 1.5; }
+  .dialog-content ha-alert { display: block; margin-bottom: 16px; }
+  .muted { color: var(--secondary-text-color); font-size: 14px; }
+  .field-row { display: flex; align-items: center; gap: 8px; min-height: 56px; border-bottom: 1px solid var(--divider-color); }
+  .field-row .field-description { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+  .field-row small { display: block; color: var(--secondary-text-color); }
+  .dialog-footer { display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
+  ha-dialog {
+    --dialog-content-padding: 0;
+    --mdc-dialog-min-width: min(560px, calc(100vw - 32px));
+    --mdc-dialog-max-width: 560px;
+  }
+  .destructive { --mdc-theme-primary: var(--error-color); }
+  .compact .toolbar { display: none; }
+  .compact .layout { display: block; min-height: 0; }
+  .compact nav { display: none; }
+  .compact .mobile-lists { display: block; padding: 0 0 12px; }
+  .compact .content { max-width: none; padding: 0; }
+  @container (max-width: 750px) {
+    .layout { display: block; }
+    nav { display: none; }
+    .mobile-lists { display: block; }
+    .content { padding: 0 16px 24px; }
+    .card-header { padding-inline-start: 16px; }
+    .card-header h2 { font-size: 22px; }
+    .list-metadata { padding-inline: 16px; }
+  }
 `;
-function inputField(label, value, change, type = "text") {
-  const field = el("label", undefined, "field");
-  field.append(el("span", label, "field-label"));
-  const input = el("input");
-  input.type = type;
-  if (type === "number") input.step = "any";
-  input.value = value ?? "";
-  input.addEventListener("input", () => change(input.value));
-  field.append(input);
-  return field;
-}
-function options(values) { return values.map(([value, label]) => ({ value, label })); }
-function parseTags(value) { return [...new Set(value.split(",").map(s => s.trim()).filter(Boolean))]; }
-function feature(list, bit) { return list.can_edit && !list.error && (list.features & bit) !== 0; }
 
 class ListsView extends HTMLElement {
   constructor() {
@@ -129,50 +334,66 @@ class ListsView extends HTMLElement {
     this.attachShadow({ mode: "open" });
     this._filter = { search: "", tag: "", person: "" };
     this._epoch = 0;
-    this._outside = event => {
-      for (const field of this.shadowRoot.querySelectorAll(".field")) {
-        if (!event.composedPath().includes(field)) {
-          const menu = field.querySelector(".listbox");
-          if (menu) menu.hidden = true;
-          field.querySelector(".combobox")?.setAttribute("aria-expanded", "false");
-        }
-      }
-    };
   }
+
   set hass(value) {
     const previous = this._hass;
     this._hass = value;
+    this.shadowRoot.querySelectorAll("ha-form").forEach((form) => { form.hass = value; });
     if (!this.isConnected) return;
-    if (!previous) { this._connect(); return; }
-    const changed = Object.keys(value.states).some(id => id.startsWith("todo.") && value.states[id] !== previous.states[id]) || Object.keys(previous.states).some(id => id.startsWith("todo.") && !value.states[id]);
+    if (!previous) {
+      this._connect();
+      return;
+    }
+    const changed = Object.keys(value.states).some((id) => id.startsWith("todo.") && value.states[id] !== previous.states[id])
+      || Object.keys(previous.states).some((id) => id.startsWith("todo.") && !value.states[id]);
     if (changed) this._refresh();
   }
+
   set narrow(value) { this._narrow = value; }
   setConfig(config) { this._config = config; }
   getCardSize() { return 6; }
+
   connectedCallback() {
-    this.ownerDocument.addEventListener("pointerdown", this._outside, true);
     if (this._hass) this._connect();
   }
+
   _connect() {
     if (this._timer) return;
+    this._loadComponents();
     this._refresh();
-    // Polling also catches provider changes that do not change the incomplete count.
-    this._timer = setInterval(() => { if (!this.ownerDocument.hidden) this._refresh(); }, 15000);
+    // Providers can change items without changing the incomplete count.
+    this._timer = setInterval(() => {
+      if (!this.ownerDocument.hidden) this._refresh();
+    }, 15000);
     const epoch = this._epoch;
-    this._hass.connection?.subscribeEvents(() => this._refresh(), "lists_plus_updated").then(unsub => {
-      if (epoch !== this._epoch || !this.isConnected) unsub();
-      else this._unsubscribe = unsub;
+    this._hass.connection?.subscribeEvents(() => this._refresh(), "lists_plus_updated").then((unsubscribe) => {
+      if (epoch !== this._epoch || !this.isConnected) unsubscribe();
+      else this._unsubscribe = unsubscribe;
     }).catch(() => {});
   }
+
+  async _loadComponents() {
+    const epoch = this._epoch;
+    try {
+      await loadNativeComponents(this);
+      if (epoch !== this._epoch) return;
+      this._componentsReady = true;
+      this._uiError = "";
+    } catch (error) {
+      this._uiError = error.message;
+    }
+    if (!this._editor) this._render();
+  }
+
   disconnectedCallback() {
     this._epoch++;
     clearInterval(this._timer);
     this._timer = null;
     this._unsubscribe?.();
     this._unsubscribe = null;
-    this.ownerDocument.removeEventListener("pointerdown", this._outside, true);
   }
+
   async _refresh() {
     if (!this._hass || this._refreshing) return;
     this._refreshing = true;
@@ -182,251 +403,401 @@ class ListsView extends HTMLElement {
       if (epoch !== this._epoch) return;
       this._data = data;
       this._connectionError = "";
-      if (!this._editor && !this._busy) this._render();
-    } catch (err) {
-      this._connectionError = err.message || "Unable to reach Home Assistant. Reconnect and try again.";
+      const typing = this.shadowRoot.activeElement?.matches("ha-form,ha-input,ha-textfield");
+      if (!this._editor && !this._busy && !typing) this._render();
+    } catch (error) {
+      this._connectionError = error.message || "Unable to reach Home Assistant. Reconnect and try again.";
       if (!this._editor) this._render();
-    } finally { this._refreshing = false; }
+    } finally {
+      this._refreshing = false;
+    }
   }
+
+  _setBusy(busy) {
+    this._busy = busy;
+    for (const control of this.shadowRoot.querySelectorAll("ha-button,mwc-button,ha-icon-button,ha-form,ha-checkbox,ha-input,ha-textfield,button")) {
+      if (busy) {
+        control._listsWasDisabled = control.disabled;
+        control.disabled = true;
+      } else {
+        control.disabled = control._listsWasDisabled;
+        delete control._listsWasDisabled;
+      }
+    }
+    const dialog = this.shadowRoot.querySelector("ha-dialog");
+    if (dialog) {
+      dialog.preventScrimClose = busy;
+      dialog.escapeKeyAction = busy ? "" : "close";
+      dialog.scrimClickAction = busy ? "" : "close";
+    }
+  }
+
   async _run(list, action, payload, revision = list.revision) {
     if (this._busy) return;
-    this._busy = true;
     const status = this.shadowRoot.querySelector(".dialog [data-status]") || this.shadowRoot.querySelector("[data-status]");
-    if (status) { status.hidden = false; status.textContent = "Saving…"; }
-    this.shadowRoot.querySelectorAll("button,input").forEach(node => { node.disabled = true; });
+    if (status) {
+      status.hidden = false;
+      status.setAttribute("alert-type", "info");
+      status.textContent = "Saving…";
+    }
+    this._setBusy(true);
     try {
       await this._hass.callWS({ type: "lists_plus/execute", entity_id: list.entity_id, action, payload, revision });
       this._editor = null;
       this._error = "";
       this._newItem = "";
       this._busy = false;
-      // An event may already have started a snapshot. Always fetch after the write.
-      while (this._refreshing) await new Promise(resolve => setTimeout(resolve, 20));
+      while (this._refreshing) await new Promise((resolve) => setTimeout(resolve, 20));
       await this._refresh();
       this._render();
-    } catch (err) {
-      this._busy = false;
-      this._error = err.message || "The change could not be saved. Try again.";
-      if (this._editor) {
-        this.shadowRoot.querySelectorAll("button,input").forEach(node => { node.disabled = false; });
-        if (status) status.textContent = this._error;
+    } catch (error) {
+      this._setBusy(false);
+      this._error = error.message || "The change could not be saved. Try again.";
+      if (this._editor && status) {
+        status.setAttribute("alert-type", "error");
+        status.textContent = this._error;
       } else this._render();
     }
   }
-  _open(editor, trigger) {
+
+  _open(editor, returnFocus = "settings") {
+    if (this._busy) return;
     this._editor = editor;
-    this._returnFocus = trigger;
+    this._returnFocus = returnFocus;
     this._error = "";
     this._render();
-    queueMicrotask(() => this.shadowRoot.querySelector(".dialog input,.dialog button")?.focus());
   }
+
   _close() {
     if (this._busy) return;
     this._editor = null;
     this._error = "";
     this._render();
-    this.shadowRoot.querySelector(`[data-focus="${this._returnFocus || "settings"}"]`)?.focus();
+    const control = [...this.shadowRoot.querySelectorAll("[data-focus]")].find((node) => node.dataset.focus === this._returnFocus);
+    control?.focus();
   }
+
+  _selectList(id) {
+    this._selected = id;
+    this._filter = { search: "", tag: "", person: "" };
+    this._newItem = "";
+    this._render();
+  }
+
   _render() {
     const root = this.shadowRoot;
-    root.replaceChildren();
-    const style = el("style", STYLES);
     const frame = el("div", undefined, this._config ? "compact" : "");
-    const header = el("header");
-    const menu = button(undefined, () => this.dispatchEvent(new CustomEvent("hass-toggle-menu", { bubbles: true, composed: true })), false, "icon-button");
-    menu.setAttribute("aria-label", "Toggle sidebar");
-    menu.append(icon("mdi:menu"));
-    header.append(menu, el("h1", "HA+ Lists"), button("Refresh", () => this._refresh(), this._busy));
+    const header = el("header", undefined, "toolbar");
+    const menu = el("ha-menu-button");
+    menu.hass = this._hass;
+    menu.narrow = this._narrow;
+    header.append(menu, el("h1", "HA+ Lists"), iconButton("Refresh", "mdi:refresh", () => this._refresh(), this._busy));
     frame.append(header);
     const main = el("main");
-    const status = el("div", this._error || this._connectionError || "", "notice error");
-    status.setAttribute("role", "status"); status.dataset.status = "";
-    if (!status.textContent) status.hidden = true;
+    const message = this._error || this._connectionError || this._uiError || "";
+    const status = el("ha-alert", message, "notice");
+    status.setAttribute("alert-type", "error");
+    status.setAttribute("role", "status");
+    status.dataset.status = "";
+    status.hidden = !message;
     main.append(status);
-    if (!this._data) {
+    if (this._uiError) main.append(actionButton("Try again", () => this._loadComponents()));
+    if (!this._componentsReady || !this._data) {
       main.append(el("p", "Loading your lists…", "empty"));
     } else {
-      const lists = this._data.lists.filter(list => !this._config?.entity || list.entity_id === this._config.entity);
-      if (!lists.some(list => list.id === this._selected)) this._selected = lists[0]?.id;
+      const lists = this._data.lists.filter((list) => !this._config?.entity || list.entity_id === this._config.entity);
+      if (!lists.some((list) => list.id === this._selected)) this._selected = lists[0]?.id;
       if (!lists.length) {
-        const card = el("ha-card");
-        card.append(el("h2", "Your lists, with a little more"), el("p", "Create a list with Home Assistant’s Local to-do integration, or connect another to-do provider. Existing lists appear here automatically."));
-        const link = el("a", "Open integrations"); link.href = "/config/integrations";
-        card.append(link); main.append(card);
+        const empty = el("ha-card");
+        const body = el("div", undefined, "empty");
+        body.append(el("h2", "No to-do lists"), el("p", "Create a list with Local to-do, or connect another to-do provider."));
+        const link = el("a", "Open integrations");
+        link.href = "/config/integrations";
+        body.append(link);
+        empty.append(body);
+        main.append(empty);
       } else {
+        const mobile = el("div", undefined, "mobile-lists");
+        if (lists.length > 1) {
+          const choices = lists.map((list) => [list.id, list.metadata.group ? `${list.metadata.group} · ${list.name}` : list.name]);
+          mobile.append(nativeForm(this._hass, [{ ...selectField("list", "To-do list", options(choices)), required: true }], { list: this._selected }, (data) => this._selectList(data.list)));
+        }
         const layout = el("div", undefined, "layout");
-        const nav = el("nav"); nav.setAttribute("aria-label", "To-do lists");
-        const card = el("ha-card");
-        for (const group of [...new Set(lists.map(list => list.metadata.group || "Ungrouped"))].sort()) {
-          card.append(el("h3", group));
-          for (const list of lists.filter(list => (list.metadata.group || "Ungrouped") === group)) {
-            const choose = button(undefined, () => { this._selected = list.id; this._filter = { search: "", tag: "", person: "" }; this._newItem = ""; this._render(); }, this._busy, `list-button${list.id === this._selected ? " active" : ""}`);
+        const nav = el("nav");
+        nav.setAttribute("aria-label", "To-do lists");
+        for (const group of [...new Set(lists.map((list) => list.metadata.group || "Ungrouped"))].sort()) {
+          nav.append(el("h2", group));
+          for (const list of lists.filter((list) => (list.metadata.group || "Ungrouped") === group)) {
+            const choose = el("button", undefined, `list-button${list.id === this._selected ? " active" : ""}`);
+            choose.type = "button";
+            choose.disabled = this._busy;
             choose.setAttribute("aria-current", list.id === this._selected ? "page" : "false");
-            choose.append(el("span", list.name, "list-name"), el("span", list.error ? "Unavailable" : `${list.items.filter(item => item.status !== "completed").length} remaining`, "list-count"));
-            card.append(choose);
+            choose.addEventListener("click", () => this._selectList(list.id));
+            choose.append(icon("mdi:clipboard-list-outline"), el("span", list.name, "list-name"));
+            const count = list.items.filter((item) => item.status !== "completed").length;
+            const countLabel = el("span", list.error ? "Unavailable" : String(count), "list-count");
+            countLabel.setAttribute("aria-label", list.error ? "Unavailable" : `${count} remaining`);
+            choose.append(countLabel);
+            nav.append(choose);
           }
         }
-        nav.append(card);
-        layout.append(nav, this._list(lists.find(list => list.id === this._selected)));
+        const body = el("div");
+        body.append(mobile, this._list(lists.find((list) => list.id === this._selected)));
+        layout.append(nav, body);
         main.append(layout);
       }
     }
-    frame.append(main); root.append(style, frame);
+    frame.append(main);
+    root.replaceChildren(el("style", STYLES), frame);
     if (this._editor) root.append(this._dialog());
   }
+
   _list(list) {
     const content = el("section", undefined, "content");
     const card = el("ha-card");
-    const heading = el("div", undefined, "row");
+    const heading = el("div", undefined, "card-header");
     heading.append(el("h2", list.name));
-    const settings = button("List settings", () => this._open({ type: "list", list }, "settings"), !list.can_edit);
-    settings.dataset.focus = "settings"; heading.append(settings); card.append(heading);
-    this._annotations(card, list.metadata, list, "list");
-    if (list.error) card.append(el("p", list.error, "notice error"));
-    if (!list.can_edit) card.append(el("p", "You have read-only access to this list.", "muted"));
+    const filters = iconButton("Filter items", "mdi:filter-variant", () => {
+      this._showFilters = !this._showFilters;
+      this._render();
+    });
+    filters.selected = Boolean(this._showFilters);
+    const settings = iconButton("List settings", "mdi:dots-vertical", () => this._open({ type: "list", list }), !list.can_edit);
+    settings.dataset.focus = "settings";
+    heading.append(filters, settings);
+    card.append(heading);
+    const annotations = el("div", undefined, "list-metadata");
+    this._annotations(annotations, list.metadata, list, "list");
+    if (annotations.childNodes.length) card.append(annotations);
+    if (list.error || !list.can_edit) {
+      const notice = el("ha-alert", list.error || "You have read-only access to this list.", "notice");
+      notice.setAttribute("alert-type", list.error ? "warning" : "info");
+      card.append(notice);
+    }
+    if (this._showFilters) {
+      const tagChoices = [...new Set(list.items.flatMap((item) => item.metadata.tags || []))]
+        .sort().map((tag) => [`tag:${tag}`, tag]);
+      const filterForm = nativeForm(this._hass, [
+        { name: "search", label: "Search items", selector: { text: {} } },
+        { name: "", type: "grid", schema: [
+          selectField("tag", "Tag", options([["all", "All tags"], ...tagChoices])),
+          selectField("person", "Assigned to", options([["all", "Anyone"], ["unassigned", "Unassigned"], ...this._data.people.map((person) => [person.id, person.name])])),
+        ] },
+      ], {
+        search: this._filter.search,
+        tag: this._filter.tag ? `tag:${this._filter.tag}` : "all",
+        person: this._filter.person || "all",
+      }, (data) => {
+        this._filter = {
+          search: data.search || "",
+          tag: data.tag?.startsWith("tag:") ? data.tag.slice(4) : "",
+          person: data.person === "all" ? "" : data.person || "",
+        };
+        this._renderItems(list);
+      });
+      const filterContainer = el("div", undefined, "filters");
+      filterContainer.append(filterForm);
+      card.append(filterContainer);
+    }
     if (feature(list, 1)) {
       const form = el("form", undefined, "add");
-      const input = el("input"); input.placeholder = "Add an item"; input.setAttribute("aria-label", "New item name"); input.maxLength = 1000; input.required = true; input.value = this._newItem || "";
-      input.addEventListener("input", () => { this._newItem = input.value; });
-      const submit = button("Add", () => {}); submit.type = "submit";
-      form.addEventListener("submit", event => { event.preventDefault(); if (input.value.trim()) this._run(list, "add_item", { summary: input.value.trim() }); });
-      form.append(input, submit); card.append(form);
+      const input = textField("Add an item", this._newItem || "", (value) => { this._newItem = value; });
+      input.maxLength = 1000;
+      const add = () => {
+        if (input.value?.trim()) this._run(list, "add_item", { summary: input.value.trim() });
+      };
+      input.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") {
+          event.preventDefault();
+          add();
+        }
+      });
+      form.addEventListener("submit", (event) => {
+        event.preventDefault();
+        add();
+      });
+      form.append(input, iconButton("Add item", "mdi:plus", add));
+      card.append(form);
     }
-    const filters = el("div", undefined, "filters");
-    const search = el("input"); search.type = "search"; search.placeholder = "Search items"; search.setAttribute("aria-label", "Search items"); search.value = this._filter.search;
-    search.addEventListener("input", () => { this._filter.search = search.value; });
-    search.addEventListener("change", () => { this._filter.search = search.value; this._render(); });
-    filters.append(search);
-    const tags = [...new Set(list.items.flatMap(item => item.metadata.tags || []))].sort();
-    filters.append(dropdown("tag", "Tag", options([["", "All tags"], ...tags.map(tag => [tag, tag])]), this._filter.tag, value => { this._filter.tag = value; this._render(); }));
-    filters.append(dropdown("person", "Assigned to", options([["", "Anyone"], ["unassigned", "Unassigned"], ...this._data.people.map(person => [person.id, person.name])]), this._filter.person, value => { this._filter.person = value; this._render(); }));
-    card.append(filters); content.append(card);
-    const visible = list.items.filter(item => {
+    const items = el("div", undefined, "items");
+    card.append(items);
+    content.append(card);
+    this._renderItems(list, items);
+    return content;
+  }
+
+  _renderItems(list, container = this.shadowRoot.querySelector(".items")) {
+    if (!container) return;
+    container.replaceChildren();
+    const visible = list.items.filter((item) => {
       const metadata = item.metadata;
       const searchable = [item.summary, metadata.group, ...(metadata.tags || []), ...Object.values(metadata.properties || {})].join(" ").toLowerCase();
-      return searchable.includes(this._filter.search.toLowerCase()) && (!this._filter.tag || metadata.tags?.includes(this._filter.tag)) && (!this._filter.person || (this._filter.person === "unassigned" ? !metadata.assignee : metadata.assignee === this._filter.person));
+      return searchable.includes(this._filter.search.toLowerCase())
+        && (!this._filter.tag || metadata.tags?.includes(this._filter.tag))
+        && (!this._filter.person || (this._filter.person === "unassigned" ? !metadata.assignee : metadata.assignee === this._filter.person));
     });
-    const itemsCard = el("ha-card");
-    if (!visible.length) itemsCard.append(el("p", list.items.length ? "No items match your filters." : "No items yet.", "empty"));
+    if (!visible.length) container.append(el("p", list.items.length ? "No items match your filters." : "No items yet.", "empty"));
     for (const completed of [false, true]) {
-      const items = visible.filter(item => (item.status === "completed") === completed);
+      const items = visible.filter((item) => (item.status === "completed") === completed);
       if (!items.length) continue;
-      itemsCard.append(el("h3", completed ? "Completed" : "To do", "section-title"));
-      for (const group of [...new Set(items.map(item => item.metadata.group || ""))].sort()) {
-        if (group) itemsCard.append(el("h3", group, "section-title"));
-        for (const item of items.filter(item => (item.metadata.group || "") === group)) itemsCard.append(this._item(list, item));
+      container.append(el("h3", completed ? "Completed" : "To do", "section-title"));
+      for (const group of [...new Set(items.map((item) => item.metadata.group || ""))].sort()) {
+        if (group) container.append(el("h4", group, "group-title"));
+        for (const item of items.filter((item) => (item.metadata.group || "") === group)) container.append(this._item(list, item));
       }
     }
-    content.append(itemsCard); return content;
   }
+
   _annotations(parent, metadata, list, scope) {
-    const chips = el("div", undefined, "chips");
-    for (const tag of metadata.tags || []) chips.append(el("span", tag, "chip"));
-    if (metadata.assignee) chips.append(el("span", this._data.people.find(person => person.id === metadata.assignee)?.name || "Person unavailable", "chip"));
-    for (const field of list.fields.filter(field => field.scope === scope)) {
+    const details = el("div", undefined, "metadata");
+    for (const tag of metadata.tags || []) details.append(el("span", tag, "tag"));
+    if (metadata.assignee) {
+      const person = el("span");
+      person.append(icon("mdi:account-outline"), el("span", this._data.people.find((item) => item.id === metadata.assignee)?.name || "Person unavailable"));
+      details.append(person);
+    }
+    for (const field of list.fields.filter((field) => field.scope === scope)) {
       const value = metadata.properties?.[field.id];
       if (value === undefined) continue;
-      const display = field.type === "area" ? this._data.areas.find(area => area.id === value)?.name || "Area unavailable" : field.type === "boolean" ? (value ? "Yes" : "No") : String(value);
-      chips.append(el("span", `${field.name}: ${display}`, "chip"));
+      let display = String(value);
+      if (field.type === "area") display = this._data.areas.find((area) => area.id === value)?.name || "Area unavailable";
+      if (field.type === "boolean") display = value ? "Yes" : "No";
+      details.append(el("span", `${field.name}: ${display}`));
     }
-    if (chips.childNodes.length) parent.append(chips);
+    if (details.childNodes.length) parent.append(details);
   }
+
   _item(list, item) {
     const row = el("div", undefined, `item${item.status === "completed" ? " completed" : ""}`);
-    const check = el("input"); check.type = "checkbox"; check.checked = item.status === "completed"; check.disabled = !feature(list, 4); check.setAttribute("aria-label", `${check.checked ? "Reopen" : "Complete"} ${item.summary}`);
+    const check = el("ha-checkbox");
+    check.checked = item.status === "completed";
+    check.disabled = !feature(list, 4);
+    check.ariaLabel = `${check.checked ? "Reopen" : "Complete"} ${item.summary}`;
     check.addEventListener("change", () => this._run(list, "complete_item", { uid: item.uid, completed: check.checked }));
-    const body = el("div", undefined, "grow"); body.append(el("span", item.summary, "item-name"));
+    const open = () => this._open({ type: "item", list, item }, item.uid);
+    const body = el("div", undefined, "item-body");
+    const name = el("button", item.summary, "item-name");
+    name.type = "button";
+    name.disabled = !list.can_edit || Boolean(list.error);
+    name.addEventListener("click", open);
+    body.append(name);
     this._annotations(body, item.metadata, list, "item");
     if (item.due) body.append(el("div", `Due: ${item.due}`, "details"));
     if (item.description) body.append(el("div", item.description, "details"));
-    const edit = button("Edit", () => this._open({ type: "item", list, item }, "settings"), !list.can_edit || !!list.error);
-    row.append(check, body, edit); return row;
+    const edit = iconButton(`Edit ${item.summary}`, "mdi:pencil", open, !list.can_edit || Boolean(list.error));
+    edit.dataset.focus = item.uid;
+    row.append(check, body, edit);
+    return row;
   }
-  _propertyInputs(form, draft, list, scope) {
-    draft.properties = { ...(draft.properties || {}) };
-    for (const field of list.fields.filter(field => field.scope === scope)) {
-      const value = draft.properties[field.id];
-      if (["boolean", "area"].includes(field.type)) {
-        const values = field.type === "boolean" ? [["true", "Yes"], ["false", "No"]] : this._data.areas.map(area => [area.id, area.name]);
-        const selected = value === undefined ? "" : String(value);
-        if (selected && !values.some(([id]) => id === selected)) values.push([selected, "Unavailable (clear or replace)"]);
-        form.append(dropdown(field.id, field.name, options([["", "Not set"], ...values]), selected, next => {
-          if (next === "") delete draft.properties[field.id];
-          else draft.properties[field.id] = field.type === "boolean" ? next === "true" : next;
-        }));
-      } else form.append(inputField(field.name, value, next => {
-        if (next === "") delete draft.properties[field.id];
-        else draft.properties[field.id] = field.type === "number" ? Number(next) : next;
-      }, field.type === "number" ? "number" : "text"));
-    }
-  }
+
   _dialog() {
-    const editor = this._editor, list = editor.list;
-    const backdrop = el("div", undefined, "backdrop");
-    const dialog = el("section", undefined, "dialog"); dialog.setAttribute("role", "dialog"); dialog.setAttribute("aria-modal", "true"); dialog.setAttribute("aria-labelledby", "dialog-title");
-    const title = el("h2", { item: "Item details", list: "List settings", field: "Add custom field", confirm: "Confirm deletion", rename: "Rename item" }[editor.type]); title.id = "dialog-title"; dialog.append(title);
-    const status = el("p", this._error || "", "error"); status.setAttribute("role", "status"); status.dataset.status = ""; dialog.append(status);
+    const editor = this._editor;
+    const list = editor.list;
+    const dialog = el("ha-dialog", undefined, "dialog");
+    const modern = "headerTitle" in dialog;
+    const title = {
+      item: "Item details", list: "List settings", field: "Add custom field",
+      confirm: "Confirm deletion", rename: "Rename item",
+    }[editor.type];
+    dialog.heading = title;
+    dialog.headerTitle = title;
+    dialog.setAttribute("header-title", title);
+    dialog.open = true;
+    dialog.addEventListener("closed", () => {
+      if (this.shadowRoot.querySelector("ha-dialog") === dialog) this._close();
+    });
+    dialog.addEventListener("wa-request-close", (event) => {
+      if (this._busy) event.preventDefault();
+    });
+    const body = el("div", undefined, "dialog-content");
+    const status = el("ha-alert", this._error || "");
+    status.setAttribute("alert-type", "error");
+    status.setAttribute("role", "status");
+    status.dataset.status = "";
+    status.hidden = !this._error;
+    body.append(status);
     const form = el("form");
     let save;
-    if (["item", "list"].includes(editor.type)) {
+    if (editor.type === "item" || editor.type === "list") {
       const scope = editor.type;
-      const original = scope === "item" ? editor.item.metadata : list.metadata;
-      const draft = { ...original, tags: [...(original.tags || [])], properties: { ...(original.properties || {}) } };
+      const metadata = scope === "item" ? editor.item.metadata : list.metadata;
+      let draft = metadataFormData(metadata, list, scope);
       if (scope === "item") {
         form.append(el("p", editor.item.summary));
-        if (feature(list, 4)) form.append(button("Rename", () => this._open({ type: "rename", list, item: editor.item })));
+        if (feature(list, 4)) form.append(actionButton("Rename", () => this._open({ type: "rename", list, item: editor.item }, editor.item.uid)));
       }
-      form.append(inputField(scope === "list" ? "List group" : "Item group", draft.group || "", value => { draft.group = value; }));
-      form.append(inputField("Tags (separated by commas)", draft.tags.join(", "), value => { draft.tags = parseTags(value); }));
-      if (scope === "item") {
-        const people = this._data.people.map(person => [person.id, person.name]);
-        if (draft.assignee && !people.some(([id]) => id === draft.assignee)) people.push([draft.assignee, "Person unavailable (clear or replace)"]);
-        form.append(dropdown("assignee", "Assigned to", options([["", "Unassigned"], ...people]), draft.assignee || "", value => { draft.assignee = value; }));
-      }
-      this._propertyInputs(form, draft, list, scope);
-      save = () => this._run(list, scope === "item" ? "set_item" : "set_list", scope === "item" ? { uid: editor.item.uid, metadata: draft } : draft);
+      const fields = nativeForm(this._hass, metadataSchema(list, scope, this._data.people), draft, (data) => { draft = data; });
+      fields.setAttribute("autofocus", "");
+      form.append(fields);
+      save = () => {
+        const value = metadataFromForm(draft, list, scope);
+        this._run(list, scope === "item" ? "set_item" : "set_list", scope === "item" ? { uid: editor.item.uid, metadata: value } : value);
+      };
       if (scope === "list") {
-        form.append(el("h3", "Custom fields"), el("p", "Define fields for items or the list itself. Use number fields for quantity and price, or area fields to select a Home Assistant area.", "muted"));
+        form.append(el("h3", "Custom fields"), el("p", "Add quantity, price, area or other fields to items or the list.", "muted"));
         for (const field of list.fields) {
           const row = el("div", undefined, "field-row");
-          row.append(el("span", `${field.name} · ${field.scope} · ${field.type}`));
-          if (this._data.admin) row.append(button("Delete", () => this._open({ type: "confirm", list, action: "delete_field", payload: { id: field.id }, message: `Delete “${field.name}” and all its values from this list and its items?` }), false, "danger"));
+          const description = el("div", undefined, "field-description");
+          description.append(el("span", field.name), el("small", `${field.scope} · ${field.type}`));
+          row.append(description);
+          if (this._data.admin) row.append(iconButton(`Delete ${field.name}`, "mdi:delete", () => this._open({
+            type: "confirm", list, action: "delete_field", payload: { id: field.id },
+            message: `Delete “${field.name}” and all its values from this list and its items?`,
+          })));
           form.append(row);
         }
-        if (this._data.admin) form.append(button("Add custom field", () => this._open({ type: "field", list })));
-        form.append(el("p", "Save group, tags and values before changing field definitions.", "muted"));
-      } else if (feature(list, 2)) form.append(button("Delete item", () => this._open({ type: "confirm", list, action: "delete_item", payload: { uid: editor.item.uid }, message: `Delete “${editor.item.summary}” from the original Home Assistant list?` }), false, "danger"));
+        if (this._data.admin) form.append(actionButton("Add custom field", () => this._open({ type: "field", list })));
+        form.append(el("p", "Save your changes before changing field definitions.", "muted"));
+      } else if (feature(list, 2)) {
+        form.append(actionButton("Delete item", () => this._open({
+          type: "confirm", list, action: "delete_item", payload: { uid: editor.item.uid },
+          message: `Delete “${editor.item.summary}” from the original Home Assistant list?`,
+        }, editor.item.uid), false, "danger"));
+      }
     } else if (editor.type === "field") {
-      const draft = { id: "", name: "", type: "text", scope: "item" };
-      form.append(inputField("Name (for example, Quantity)", "", value => { draft.name = value; }));
-      form.append(inputField("ID (for example, quantity)", "", value => { draft.id = value; }));
-      form.append(dropdown("type", "Type", options([["text", "Text"], ["number", "Number"], ["boolean", "Yes / No"], ["area", "Home Assistant area"]]), draft.type, value => { draft.type = value; }));
-      form.append(dropdown("scope", "Applies to", options([["item", "Each item"], ["list", "The list"]]), draft.scope, value => { draft.scope = value; }));
+      let draft = { id: "", name: "", type: "text", scope: "item" };
+      form.append(nativeForm(this._hass, [
+        { name: "name", label: "Name", required: true, selector: { text: {} } },
+        { name: "id", label: "ID", helper: "Lowercase letters, numbers and underscores, such as quantity.", required: true, selector: { text: {} } },
+        selectField("type", "Type", options([["text", "Text"], ["number", "Number"], ["boolean", "Yes / No"], ["area", "Home Assistant area"]])),
+        selectField("scope", "Applies to", options([["item", "Each item"], ["list", "The list"]])),
+      ], draft, (data) => { draft = data; }));
       save = () => this._run(list, "add_field", draft);
     } else if (editor.type === "rename") {
-      let name = editor.item.summary;
-      form.append(inputField("Item name", name, value => { name = value; }));
-      save = () => this._run(list, "rename_item", { uid: editor.item.uid, summary: name });
+      let draft = { summary: editor.item.summary };
+      form.append(nativeForm(this._hass, [{ name: "summary", label: "Item name", required: true, selector: { text: {} } }], draft, (data) => { draft = data; }));
+      save = () => this._run(list, "rename_item", { uid: editor.item.uid, summary: draft.summary });
     } else {
-      form.append(el("p", editor.message)); save = () => this._run(list, editor.action, editor.payload);
+      form.append(el("p", editor.message));
+      save = () => this._run(list, editor.action, editor.payload);
     }
-    const actions = el("div", undefined, "actions");
-    actions.append(button("Cancel", () => this._close()));
-    const submit = button(editor.type === "confirm" ? "Delete" : "Save", () => {}, this._busy, editor.type === "confirm" ? "danger" : "primary"); submit.type = "submit"; actions.append(submit);
-    form.addEventListener("submit", event => { event.preventDefault(); save(); }); form.append(actions); dialog.append(form); backdrop.append(dialog);
-    backdrop.addEventListener("click", event => { if (event.target === backdrop) this._close(); });
-    dialog.addEventListener("keydown", event => {
-      if (event.key === "Escape" && !event.defaultPrevented) { event.preventDefault(); event.stopPropagation(); this._close(); }
-      if (event.key === "Tab") {
-        const nodes = [...dialog.querySelectorAll("button:not([disabled]),input:not([disabled]),a[href]")].filter(node => !node.closest("[hidden]"));
-        const first = nodes[0], last = nodes.at(-1), current = this.shadowRoot.activeElement;
-        if (event.shiftKey && current === first) { event.preventDefault(); last?.focus(); }
-        else if (!event.shiftKey && current === last) { event.preventDefault(); first?.focus(); }
-      }
+    const submit = () => {
+      if (this._busy) return;
+      const invalid = [...form.querySelectorAll("ha-form")].some((fields) => fields.reportValidity && !fields.reportValidity());
+      if (!invalid) save();
+    };
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      submit();
     });
-    return backdrop;
+    body.append(form);
+    dialog.append(body);
+    const cancel = actionButton("Cancel", () => this._close());
+    const confirm = actionButton(editor.type === "confirm" ? "Delete" : "Save", submit, this._busy, editor.type === "confirm" ? "danger" : "accent");
+    if (modern) {
+      const footer = el("div", undefined, "dialog-footer");
+      footer.slot = "footer";
+      footer.append(cancel, confirm);
+      dialog.append(footer);
+    } else {
+      cancel.slot = "secondaryAction";
+      confirm.slot = "primaryAction";
+      dialog.append(cancel, confirm);
+    }
+    return dialog;
   }
 }
+
 customElements.define("lists-plus-panel", class extends ListsView {});
 customElements.define("lists-plus-card", class extends ListsView {});
 window.customCards = window.customCards || [];

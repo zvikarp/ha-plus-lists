@@ -12,7 +12,7 @@ Groups, tags, custom fields and assignments for **your existing Home Assistant t
 - Apply fields to each item (quantity, price, area) or to the list itself (budget, notes).
 - Assign items to existing Home Assistant people.
 - Add, rename, complete, reopen and delete the original to-do items, where the provider supports those operations.
-- Use a responsive sidebar panel or a dashboard card, with light/dark theme support.
+- Use Home Assistant’s native forms, selectors, checkboxes and dialogs in a responsive sidebar panel or dashboard card.
 - Call authenticated Home Assistant WebSocket commands or actions from automations.
 
 The original to-do integration owns list items. HA+ Lists stores **only metadata** in Home Assistant's built-in storage. No external database, account, cloud service, or runtime frontend dependency is required.
