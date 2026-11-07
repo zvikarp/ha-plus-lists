@@ -15,7 +15,7 @@ test = ["pytest-homeassistant-custom-component==0.13.204", "home-assistant-front
 include = ["custom_components*"]
 
 [tool.setuptools.package-data]
-"custom_components.lists_plus" = ["*.json", "*.yaml", "frontend/*.js", "translations/*.json", "brand/*.png", "brand/*.svg"]
+"custom_components.lists_plus" = ["*.json", "*.yaml", "frontend/*.js", "frontend/ha-plus-ui.*", "translations/*.json", "brand/*.png", "brand/*.svg"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

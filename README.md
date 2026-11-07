@@ -73,3 +73,12 @@ Omit `entity` to show all accessible lists. The sidebar panel is available at `/
 See [Architecture and API](docs/API.md) and [Contributing](CONTRIBUTING.md). CI and the manually dispatched, CI-gated release workflow follow HA+ Modes. Release archives contain only integration files, with the component directory contents at the ZIP root.
 
 This initial version is ready for installation testing. Automated integration tests use real Home Assistant to-do services, HTTP and WebSocket endpoints. Testing on your own instance is still needed for your specific provider, theme and Home Assistant version.
+
+## Shared UI development
+
+Edit `src/lists-plus.js` and run `npm ci`, `npm run build` and `npm test`.
+Commit the generated integration frontend with its source. The pinned
+[`@ha-plus/ui`](https://github.com/zvikarp/ha-plus-packages) release contains
+all styling and shared controls. Add reusable presentation to the package
+instead of app-local CSS or style writes. CI checks generated-file drift.
+HACS installations contain the complete bundle and require no browser CDN.

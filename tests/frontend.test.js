@@ -285,3 +285,13 @@ test("background snapshots preserve the focused native add field", async () => {
   assert.equal(input.value, "Pending item");
   panel.remove();
 });
+
+test('panel and dashboard card use only the shared collection stylesheet', async () => {
+  const { collectionStyles } = await import('@ha-plus/ui');
+  for (const tag of ['lists-plus-panel', 'lists-plus-card']) {
+    const { panel } = await setup(snapshot(), false, tag);
+    assert.equal(panel.shadowRoot.querySelectorAll('style').length, 1);
+    assert.equal(panel.shadowRoot.querySelector('style').textContent, collectionStyles);
+    assert.equal(panel.shadowRoot.querySelector('[style]'), null);
+  }
+});
