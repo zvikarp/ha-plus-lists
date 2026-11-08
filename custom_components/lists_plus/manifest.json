@@ -1,7 +1,7 @@
 {
   "domain": "lists_plus",
   "name": "HA+ Lists",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "codeowners": [
     "@zvikarp"
   ],

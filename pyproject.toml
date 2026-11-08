@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ha-plus-lists"
-version = "0.1.5"
+version = "0.1.6"
 description = "Groups, tags, custom fields and assignments for existing Home Assistant lists"
 requires-python = ">=3.13"
 
