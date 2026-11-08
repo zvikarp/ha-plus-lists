@@ -396,7 +396,7 @@ class ListsView extends HTMLElement {
 
   _list(list) {
     const content = el("section", undefined, "content");
-    const card = el("ha-card");
+    const card = el(this._config ? "ha-card" : "section");
     const heading = el("div", undefined, "card-header");
     heading.append(el("h2", list.name));
     const filters = iconButton(this._t("filter_items"), "mdi:filter-variant", () => {
