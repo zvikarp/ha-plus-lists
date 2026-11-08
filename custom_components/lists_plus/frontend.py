@@ -1,50 +1,33 @@
-"""Bundle a themed sidebar panel and dashboard card, matching the HA+ family."""
+"""Register app-owned frontend assets through the shared HA+ lifecycle."""
 
 from pathlib import Path
 
-from homeassistant.components import frontend
-from homeassistant.components.frontend import add_extra_js_url
-from homeassistant.components.http import StaticPathConfig
-from homeassistant.components.panel_custom import async_register_panel
-
 from .const import DOMAIN
-
-PATH = "/lists_plus/lists-plus.js"
+from .ha_plus_frontend import (
+    async_register_frontend as register_frontend,
+)
+from .ha_plus_frontend import (
+    async_unregister_frontend as unregister_frontend,
+)
 
 
 async def async_register_frontend(hass):
-    from homeassistant.loader import async_get_integration
-
-    integration = await async_get_integration(hass, DOMAIN)
-    url = f"{PATH}?v={integration.version}"
-    if not hass.data.get("lists_plus_frontend_registered"):
-        await hass.http.async_register_static_paths(
-            [
-                StaticPathConfig(
-                    "/lists_plus/icon.png",
-                    str(Path(__file__).parent / "brand/icon.png"),
-                    cache_headers=False,
-                ),
-                StaticPathConfig(
-                    PATH,
-                    str(Path(__file__).parent / "frontend/lists-plus.js"),
-                    cache_headers=False,
-                ),
-            ]
-        )
-        add_extra_js_url(hass, url)
-        hass.data["lists_plus_frontend_registered"] = True
-    await async_register_panel(
+    root = Path(__file__).parent
+    await register_frontend(
         hass,
+        domain=DOMAIN,
+        module_url="/lists_plus/lists-plus.js",
+        static_paths={
+            "/lists_plus/lists-plus.js": root / "frontend/lists-plus.js",
+            "/lists_plus/icon.png": root / "brand/icon.png",
+        },
         webcomponent_name="lists-plus-panel",
         frontend_url_path="ha-plus-lists",
         sidebar_title="HA+ Lists",
         sidebar_icon="lists-plus:logo",
-        module_url=url,
         require_admin=False,
-        config={"version": str(integration.version)},
     )
 
 
 def async_unregister_frontend(hass):
-    frontend.async_remove_panel(hass, "ha-plus-lists")
+    unregister_frontend(hass, "ha-plus-lists")

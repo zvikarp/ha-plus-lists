@@ -251,3 +251,6 @@ async def test_real_frontend_registration(hass, loaded, hass_client):
     assert "lists-plus-card" in await response.text()
     async_unregister_frontend(hass)
     assert "ha-plus-lists" not in hass.data["frontend_panels"]
+    await async_register_frontend(hass)
+    assert "ha-plus-lists" in hass.data["frontend_panels"]
+    async_unregister_frontend(hass)
