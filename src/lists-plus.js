@@ -2,7 +2,7 @@ import messages from "./translations/en.json";
 import { localize, haContext } from "@ha-plus/ui";
 const t = (key, values) => localize(haContext(), messages, key, values);
 
-import { collectionStyles, el, icon, actionButton, iconButton, nativeTextField as textField, nativeForm, loadNativeComponents, applyPreferences, formatDateTime, formatNumber, showToast, panelHeader } from "@ha-plus/ui";
+import { collectionStyles, collectionCreateButton, appFooter, el, icon, actionButton, iconButton, nativeTextField as textField, nativeForm, loadNativeComponents, applyPreferences, formatDateTime, formatNumber, showToast, panelHeader } from "@ha-plus/ui";
 
 /* HA+ Lists: bundled, local, themed UI with no runtime dependencies. */
 // Supplied ha-plus-lists-mono.svg, flattened for Home Assistant's icon API.
@@ -301,75 +301,94 @@ class ListsView extends HTMLElement {
     this._render();
   }
 
+  set panel(value) {
+    this._panel = value;
+    const version = this.shadowRoot.querySelector("[data-version]");
+    if (version) version.textContent = value?.config?.version ? `v${value.config.version}` : "";
+  }
+
+  _createButton(focus) {
+    const control = collectionCreateButton(this._t("create_new_list"), () => this._open({ type: "create_list" }, focus), this._busy);
+    control.dataset.focus = focus;
+    return control;
+  }
+
   _render() {
     const root = this.shadowRoot;
-    const frame = el("div", undefined, this._config ? "compact" : "");
-    const header = panelHeader("HA+ Lists", { hass: this._hass, narrow: this._narrow,
-      domain: "lists_plus", iconUrl: "/lists_plus/icon.png",
-      onRefresh: () => this._refresh(), refreshing: this._busy });
+    const compact = Boolean(this._config);
+    const frame = el("div", undefined, compact ? "compact" : "");
+    const header = panelHeader("HA+ Lists", {
+      hass: this._hass, narrow: this._narrow, domain: "lists_plus", iconUrl: "/lists_plus/icon.png",
+      onRefresh: () => this._refresh(), refreshing: this._busy,
+    });
     header.classList.add("toolbar");
     frame.append(header);
-    const main = el("main");
+    const lists = (this._data?.lists || []).filter(list => !this._config?.entity || list.entity_id === this._config.entity);
+    if (!lists.some(list => list.id === this._selected)) this._selected = lists[0]?.id;
+    const canCreate = this._data?.admin && !this._config?.entity;
+    const main = el("main", undefined, "ha-plus-collection-layout");
+    const nav = el("nav", undefined, "ha-plus-collection-nav");
+    nav.setAttribute("aria-label", this._t("to_do_lists"));
+    const items = el("div", undefined, "ha-plus-collection-items");
+    for (const group of [...new Set(lists.map(list => list.metadata.group || "Ungrouped"))].sort()) {
+      items.append(el("h2", group));
+      for (const list of lists.filter(list => (list.metadata.group || "Ungrouped") === group)) {
+        const choose = el("button", undefined, "list-button ha-plus-collection-item");
+        choose.type = "button";
+        choose.disabled = this._busy;
+        choose.setAttribute("aria-current", list.id === this._selected ? "page" : "false");
+        choose.addEventListener("click", () => this._selectList(list.id));
+        choose.append(icon("mdi:clipboard-list-outline"), el("span", list.name, "ha-plus-collection-name"));
+        const count = list.items.filter(item => item.status !== "completed").length;
+        const countLabel = el("span", list.error ? this._t("unavailable") : formatNumber(this._hass, count), "ha-plus-collection-count");
+        countLabel.setAttribute("aria-label", list.error ? this._t("unavailable") : `${count} remaining`);
+        choose.append(countLabel);
+        items.append(choose);
+      }
+    }
+    nav.append(items);
+    if (canCreate) {
+      const actions = el("div", undefined, "ha-plus-collection-create");
+      actions.append(this._createButton("create-list"));
+      nav.append(actions);
+    }
+    const body = el("div", undefined, "ha-plus-collection-body");
+    const mobile = el("div", undefined, "ha-plus-collection-mobile");
+    if (lists.length > 1) {
+      const choices = lists.map(list => [list.id, list.metadata.group ? `${list.metadata.group} · ${list.name}` : list.name]);
+      mobile.append(nativeForm(this._hass, [{ ...selectField("list", "To-do list", options(choices)), required: true }], { list: this._selected }, data => this._selectList(data.list)));
+    }
+    if (canCreate) mobile.append(this._createButton("create-list-mobile"));
+    body.append(mobile);
+    const content = el("div");
     const message = this._error || this._connectionError || this._uiError || "";
     const status = el("ha-alert", message, "notice");
     status.setAttribute("alert-type", "error");
     status.setAttribute("role", "status");
     status.dataset.status = "";
     status.hidden = !message;
-    main.append(status);
-    if (this._data?.admin && !this._config?.entity) {
-      const add = actionButton(this._t("create_list"), () => this._open({ type: "create_list" }, "create-list"), this._busy, "accent");
-      add.dataset.focus = "create-list";
-      const actions = el("div", undefined, "ha-plus-toolbar");
-      actions.append(add);
-      main.append(actions);
-    }
-    if (this._uiError) main.append(actionButton(this._t("try_again"), () => this._loadComponents()));
+    content.append(status);
+    if (this._uiError) content.append(actionButton(this._t("try_again"), () => this._loadComponents()));
     if (!this._componentsReady || !this._data) {
-      main.append(el("p", this._t("loading_your_lists"), "empty"));
-    } else {
-      const lists = this._data.lists.filter((list) => !this._config?.entity || list.entity_id === this._config.entity);
-      if (!lists.some((list) => list.id === this._selected)) this._selected = lists[0]?.id;
-      if (!lists.length) {
-        const empty = el("ha-card");
-        const body = el("div", undefined, "empty");
-        body.append(el("h2", this._t("no_to_do_lists")), el("p", this._t("create_a_list_with_local_to_do_or_connect_another_to_do_provider")));
-        const link = el("a", this._t("open_integrations"));
-        link.href = "/config/integrations";
-        body.append(link);
-        empty.append(body);
-        main.append(empty);
-      } else {
-        const mobile = el("div", undefined, "mobile-lists");
-        if (lists.length > 1) {
-          const choices = lists.map((list) => [list.id, list.metadata.group ? `${list.metadata.group} · ${list.name}` : list.name]);
-          mobile.append(nativeForm(this._hass, [{ ...selectField("list", "To-do list", options(choices)), required: true }], { list: this._selected }, (data) => this._selectList(data.list)));
-        }
-        const layout = el("div", undefined, "layout");
-        const nav = el("nav");
-        nav.setAttribute("aria-label", this._t("to_do_lists"));
-        for (const group of [...new Set(lists.map((list) => list.metadata.group || "Ungrouped"))].sort()) {
-          nav.append(el("h2", group));
-          for (const list of lists.filter((list) => (list.metadata.group || "Ungrouped") === group)) {
-            const choose = el("button", undefined, `list-button${list.id === this._selected ? " active" : ""}`);
-            choose.type = "button";
-            choose.disabled = this._busy;
-            choose.setAttribute("aria-current", list.id === this._selected ? "page" : "false");
-            choose.addEventListener("click", () => this._selectList(list.id));
-            choose.append(icon("mdi:clipboard-list-outline"), el("span", list.name, "list-name"));
-            const count = list.items.filter((item) => item.status !== "completed").length;
-            const countLabel = el("span", list.error ? this._t("unavailable") : formatNumber(this._hass, count), "list-count");
-            countLabel.setAttribute("aria-label", list.error ? this._t("unavailable") : `${count} remaining`);
-            choose.append(countLabel);
-            nav.append(choose);
-          }
-        }
-        const body = el("div");
-        body.append(mobile, this._list(lists.find((list) => list.id === this._selected)));
-        layout.append(nav, body);
-        main.append(layout);
-      }
-    }
+      content.append(el("p", this._t("loading_your_lists"), "empty"));
+    } else if (!lists.length) {
+      const empty = el("ha-card");
+      const description = el("div", undefined, "empty");
+      description.append(el("h2", this._t("no_to_do_lists")), el("p", this._t("create_a_list_with_local_to_do_or_connect_another_to_do_provider")));
+      const link = el("a", this._t("open_integrations"));
+      link.href = "/config/integrations";
+      description.append(link);
+      empty.append(description);
+      content.className = "content";
+      content.append(empty);
+    } else content.append(this._list(lists.find(list => list.id === this._selected)));
+    body.append(content);
+    if (!compact) body.append(appFooter({
+      githubUrl: "https://github.com/zvikarp/ha-plus-lists",
+      documentationUrl: "https://github.com/zvikarp/ha-plus-lists#readme",
+      version: this._panel?.config?.version,
+    }));
+    main.append(nav, body);
     frame.append(main);
     root.replaceChildren(el("style", collectionStyles), frame);
     if (this._editor) root.append(this._dialog());

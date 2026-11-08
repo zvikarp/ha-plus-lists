@@ -290,7 +290,7 @@ test('panel and dashboard card use only the shared collection stylesheet', async
   const { collectionStyles } = await import('@ha-plus/ui');
   for (const tag of ['lists-plus-panel', 'lists-plus-card']) {
     const { panel } = await setup(snapshot(), false, tag);
-    assert.equal(panel.shadowRoot.querySelectorAll('style').length, 1);
+    assert.equal([...panel.shadowRoot.children].filter(node => node.localName === 'style').length, 1);
     assert.equal(panel.shadowRoot.querySelector('style').textContent, collectionStyles);
     assert.equal(panel.shadowRoot.querySelector('[style]'), null);
   }
@@ -331,4 +331,18 @@ test('duplicate list creation stays in the dialog with an actionable error', asy
   assert.equal(panel._editor.type, 'create_list');
   assert.match(panel._error, /already exists/);
   assert.equal(panel._busy, false);
+});
+
+test('create action sits below sidebar items and footer belongs to the content column', async () => {
+  const { panel } = await setup();
+  panel.panel = { config: { version: '0.1.5' } };
+  const nav = panel.shadowRoot.querySelector('.ha-plus-collection-nav');
+  assert.equal(nav.lastElementChild.className, 'ha-plus-collection-create');
+  const create = nav.querySelector('[data-focus="create-list"]');
+  assert.equal(create.textContent, 'Create New List');
+  assert.equal(create.querySelector('ha-icon').getAttribute('icon'), 'mdi:plus');
+  assert.equal(nav.querySelector('footer'), null);
+  const footer = panel.shadowRoot.querySelector('.ha-plus-collection-body footer');
+  assert.equal(footer.querySelector('[data-version]').textContent, 'v0.1.5');
+  assert.equal(footer.querySelectorAll('a').length, 2);
 });

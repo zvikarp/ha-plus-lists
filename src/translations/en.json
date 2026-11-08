@@ -71,5 +71,6 @@
   "list_name_required": "Enter a list name.",
   "list_already_exists": "A local list with this name already exists.",
   "list_creation_failed": "The list could not be created. Try again.",
-  "list_created": "List created"
+  "list_created": "List created",
+  "create_new_list": "Create New List"
 }

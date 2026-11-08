@@ -73,7 +73,8 @@
     list_name_required: "Enter a list name.",
     list_already_exists: "A local list with this name already exists.",
     list_creation_failed: "The list could not be created. Try again.",
-    list_created: "List created"
+    list_created: "List created",
+    create_new_list: "Create New List"
   };
 
   // node_modules/@ha-plus/ui/src/dom.js
@@ -86,6 +87,19 @@
   function icon(name) {
     const node = el("ha-icon");
     node.setAttribute("icon", name);
+    return node;
+  }
+  function button(text, handler, disabled = false, className) {
+    const registry = document.defaultView?.customElements;
+    const native = registry?.get("ha-button") ? "ha-button" : registry?.get("mwc-button") ? "mwc-button" : "button";
+    const node = el(native, text, className);
+    node.type = "button";
+    node.disabled = disabled;
+    if (native === "ha-button") node.appearance = className?.split(" ").includes("primary") ? "accent" : "plain";
+    if (native === "mwc-button") node.raised = Boolean(className?.split(" ").includes("primary"));
+    node.addEventListener("click", () => {
+      if (!node.disabled) handler();
+    });
     return node;
   }
 
@@ -723,8 +737,82 @@
     view.dispatchEvent(new view.CustomEvent("location-changed", { detail: { replace: false } }));
   }
 
+  // node_modules/@ha-plus/ui/src/collection-layout.js
+  var collectionLayoutStyles = `
+  .ha-plus-collection-layout {
+    --ha-plus-collection-header-height: var(--header-height, 56px);
+    display: grid;
+    grid-template-columns: 256px minmax(0, 1fr);
+    min-height: calc(100dvh - var(--ha-plus-collection-header-height));
+  }
+  .ha-plus-collection-layout.ha-plus-embedded { --ha-plus-collection-header-height: 0px; }
+  .ha-plus-collection-nav {
+    display: flex;
+    flex-direction: column;
+    position: sticky;
+    top: var(--ha-plus-collection-header-height);
+    height: calc(100dvh - var(--ha-plus-collection-header-height));
+    box-sizing: border-box;
+    padding: 12px 8px;
+    border-inline-end: 1px solid var(--divider-color, #e0e0e0);
+    background: var(--sidebar-background-color, var(--card-background-color, #fff));
+  }
+  .ha-plus-collection-items { flex: 1; overflow: auto; min-height: 0; }
+  .ha-plus-collection-nav h2 { margin: 20px 16px 8px; color: var(--secondary-text-color, #727272); font-size: 12px; font-weight: 500; }
+  .ha-plus-collection-item {
+    display: flex; align-items: center; gap: 16px; width: 100%; min-height: 56px;
+    box-sizing: border-box; padding: 8px 16px; border: 0; border-radius: 4px;
+    background: transparent; color: var(--primary-text-color, #212121); text-align: start;
+    font: inherit; text-decoration: none; cursor: pointer;
+  }
+  .ha-plus-collection-item:hover { background: var(--secondary-background-color, #f5f5f5); }
+  .ha-plus-collection-item[aria-current=page] { color: var(--primary-color, #03a9f4); background: var(--ha-color-fill-primary-quiet-resting, var(--secondary-background-color, #f5f5f5)); }
+  .ha-plus-collection-item:focus-visible { outline: 2px solid var(--primary-color, #03a9f4); outline-offset: -2px; }
+  .ha-plus-collection-name { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+  .ha-plus-collection-count { color: var(--secondary-text-color, #727272); font-size: 12px; }
+  .ha-plus-collection-create { padding: 16px 8px 4px; }
+  .ha-plus-create-button {
+    display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+    min-height: 40px; padding: 0 16px; border: 0; border-radius: var(--ha-button-border-radius, 999px);
+    background: var(--ha-color-fill-primary-normal-resting, #d9f2fc);
+    color: var(--ha-color-on-primary-quiet, var(--primary-color, #03a9f4));
+    text-decoration: none; font: 500 14px var(--ha-font-family-body, var(--primary-font-family, Roboto, sans-serif)); cursor: pointer;
+  }
+  ha-button.ha-plus-create-button, mwc-button.ha-plus-create-button { padding: 0; background: transparent; }
+  .ha-plus-create-button:hover { background: var(--ha-color-fill-primary-normal-hover, #caebf9); }
+  .ha-plus-create-button:focus-visible { outline: 2px solid var(--primary-color, #03a9f4); outline-offset: 3px; }
+  .ha-plus-create-button ha-icon { --mdc-icon-size: 20px; }
+  .ha-plus-collection-body { display: flex; flex-direction: column; min-width: 0; min-height: calc(100dvh - var(--ha-plus-collection-header-height)); }
+  .ha-plus-collection-content { flex: 1; min-width: 0; width: 100%; max-width: 1000px; margin-inline: auto; padding: 24px; box-sizing: border-box; }
+  .ha-plus-collection-mobile { display: none; padding: 16px; }
+  .ha-plus-collection-mobile label { display: block; margin-bottom: 8px; color: var(--secondary-text-color, #727272); }
+  .ha-plus-collection-mobile select { width: 100%; min-height: 48px; padding: 8px 12px; background: var(--card-background-color, #fff); color: var(--primary-text-color, #212121); border: 1px solid var(--divider-color, #e0e0e0); border-radius: 4px; font: inherit; }
+  .ha-plus-collection-mobile .ha-plus-create-button { margin-top: 12px; }
+  .ha-plus-collection-host { container-type: inline-size; }
+  @media (max-width: 750px) {
+    .ha-plus-collection-layout { display: block; }
+    .ha-plus-collection-nav { display: none; }
+    .ha-plus-collection-mobile { display: block; }
+    .ha-plus-collection-content { padding: 0 16px 24px; }
+  }
+  @container (max-width: 750px) {
+    .ha-plus-collection-layout { display: block; }
+    .ha-plus-collection-nav { display: none; }
+    .ha-plus-collection-mobile { display: block; }
+    .ha-plus-collection-content { padding: 0 16px 24px; }
+  }
+`;
+  function collectionCreateButton(label, handler, disabled = false) {
+    const control = button(void 0, handler, disabled, "ha-plus-create-button");
+    if (control.localName === "ha-button") control.appearance = "filled";
+    const plus = icon("mdi:plus");
+    if (control.localName !== "button") plus.slot = control.localName === "mwc-button" ? "icon" : "start";
+    control.append(plus, document.createTextNode(label));
+    return control;
+  }
+
   // node_modules/@ha-plus/ui/src/collections.js
-  var collectionStyles = `${appStyles}
+  var collectionStyles = `${appStyles}${collectionLayoutStyles}
 
   :host {
     display: block;
@@ -743,77 +831,7 @@
     display: none !important;
   }
 
-  .layout {
-    display: grid;
-    grid-template-columns: 256px minmax(0, 1fr);
-    min-height: calc(100dvh - var(--header-height, 56px));
-  }
-
-  nav {
-    padding: 12px 8px;
-    border-inline-end: 1px solid var(--divider-color);
-    background: var(--sidebar-background-color, var(--card-background-color));
-  }
-
-  nav h2 {
-    margin: 20px 16px 8px;
-    color: var(--secondary-text-color);
-    font-size: var(--ha-font-size-s, 12px);
-    font-weight: var(--ha-font-weight-medium, 500);
-  }
-
-  .list-button {
-    display: flex;
-    align-items: center;
-    gap: 16px;
-    width: 100%;
-    min-height: 56px;
-    padding: 8px 16px;
-    border: 0;
-    border-radius: var(--ha-border-radius-sm, 4px);
-    background: transparent;
-    color: var(--primary-text-color);
-    text-align: start;
-    font: inherit;
-    cursor: pointer;
-  }
-
-  .list-button:hover {
-    background: var(--secondary-background-color);
-  }
-
-  .list-button.active {
-    color: var(--primary-color);
-    background: var(--ha-color-fill-primary-quiet-resting, var(--secondary-background-color));
-  }
-
-  .list-name {
-    flex: 1;
-    overflow-wrap: anywhere;
-  }
-
-  .list-count {
-    color: var(--secondary-text-color);
-    font-size: var(--ha-font-size-s, 12px);
-  }
-
-  .list-button:focus-visible, .item-name:focus-visible {
-    outline: 2px solid var(--primary-color);
-    outline-offset: -2px;
-  }
-
-  .mobile-lists {
-    display: none;
-    padding: 16px;
-  }
-
-  .content {
-    width: 100%;
-    max-width: 680px;
-    min-width: 0;
-    margin: 0 auto;
-    padding: 24px;
-  }
+  .content { width: 100%; max-width: 680px; min-width: 0; margin: 0 auto; padding: 24px; }
 
   ha-card {
     display: block;
@@ -877,7 +895,7 @@
     align-items: center;
     gap: 8px;
     min-height: 56px;
-    padding: 4px 8px;
+    padding: 4px 16px 4px 24px;
   }
 
   .item + .item {
@@ -1028,16 +1046,18 @@
     display: none;
   }
 
-  .compact .layout {
+  .compact .ha-plus-collection-layout {
     display: block;
     min-height: 0;
   }
 
-  .compact nav {
+  .compact .ha-plus-collection-body { min-height: 0; }
+
+  .compact .ha-plus-collection-nav {
     display: none;
   }
 
-  .compact .mobile-lists {
+  .compact .ha-plus-collection-mobile {
     display: block;
     padding: 0 0 12px;
   }
@@ -1048,15 +1068,6 @@
   }
 
   @container (max-width: 750px) {
-    .layout {
-      display: block;
-    }
-    nav {
-      display: none;
-    }
-    .mobile-lists {
-      display: block;
-    }
     .content {
       padding: 0 16px 24px;
     }
@@ -1118,8 +1129,45 @@
     await nativeComponents;
   }
 
+  // node_modules/@ha-plus/ui/src/footer.js
+  var footerStyles = `
+  .ha-plus-footer {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px 24px;
+    margin-top: auto;
+    padding: 24px 16px;
+    border-top: 1px solid var(--divider-color, #e0e0e0);
+    color: var(--secondary-text-color, #727272);
+    font: 14px var(--ha-font-family-body, var(--primary-font-family, Roboto, sans-serif));
+  }
+  .ha-plus-footer a { color: var(--primary-color, #03a9f4); text-decoration: none; min-height: 44px; display: inline-flex; align-items: center; }
+  .ha-plus-footer a:hover { text-decoration: underline; }
+  .ha-plus-footer a:focus-visible { outline: 2px solid var(--primary-color, #03a9f4); outline-offset: 4px; }
+  .ha-plus-page-body { display: flex; flex-direction: column; min-height: calc(100dvh - var(--header-height, 56px)); }
+  .ha-plus-page-body > main { flex: 1; width: 100%; box-sizing: border-box; }
+`;
+  function appFooter({ githubUrl, documentationUrl, version } = {}) {
+    const footer = el("footer", void 0, "ha-plus-footer");
+    footer.append(el("style", footerStyles));
+    for (const [label, href] of [["GitHub", githubUrl], ["Documentation", documentationUrl]]) {
+      if (!href) continue;
+      const link = el("a", label);
+      link.href = href;
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      footer.append(link);
+    }
+    const number = el("span", version ? `v${String(version).replace(/^v/, "")}` : "");
+    number.dataset.version = "";
+    footer.append(number);
+    return footer;
+  }
+
   // node_modules/@ha-plus/ui/src/index.js
-  /*! @ha-plus/ui v0.3.2 | MIT | Copyright (c) 2026 HA+ contributors | https://github.com/zvikarp/ha-plus-packages/blob/main/LICENSE */
+  /*! @ha-plus/ui v0.3.3 | MIT | Copyright (c) 2026 HA+ contributors | https://github.com/zvikarp/ha-plus-packages/blob/main/LICENSE */
   function panelHeader(title, { hass, narrow, actions = [], subtitle, domain, iconUrl, onRefresh, refreshing = false } = {}) {
     const header = el("header", void 0, "ha-plus-header");
     const menu = el("ha-menu-button");
@@ -1430,9 +1478,20 @@
       this._newItem = "";
       this._render();
     }
+    set panel(value) {
+      this._panel = value;
+      const version = this.shadowRoot.querySelector("[data-version]");
+      if (version) version.textContent = value?.config?.version ? `v${value.config.version}` : "";
+    }
+    _createButton(focus) {
+      const control = collectionCreateButton(this._t("create_new_list"), () => this._open({ type: "create_list" }, focus), this._busy);
+      control.dataset.focus = focus;
+      return control;
+    }
     _render() {
       const root = this.shadowRoot;
-      const frame = el("div", void 0, this._config ? "compact" : "");
+      const compact = Boolean(this._config);
+      const frame = el("div", void 0, compact ? "compact" : "");
       const header = panelHeader("HA+ Lists", {
         hass: this._hass,
         narrow: this._narrow,
@@ -1443,67 +1502,72 @@
       });
       header.classList.add("toolbar");
       frame.append(header);
-      const main = el("main");
+      const lists = (this._data?.lists || []).filter((list) => !this._config?.entity || list.entity_id === this._config.entity);
+      if (!lists.some((list) => list.id === this._selected)) this._selected = lists[0]?.id;
+      const canCreate = this._data?.admin && !this._config?.entity;
+      const main = el("main", void 0, "ha-plus-collection-layout");
+      const nav = el("nav", void 0, "ha-plus-collection-nav");
+      nav.setAttribute("aria-label", this._t("to_do_lists"));
+      const items = el("div", void 0, "ha-plus-collection-items");
+      for (const group of [...new Set(lists.map((list) => list.metadata.group || "Ungrouped"))].sort()) {
+        items.append(el("h2", group));
+        for (const list of lists.filter((list2) => (list2.metadata.group || "Ungrouped") === group)) {
+          const choose = el("button", void 0, "list-button ha-plus-collection-item");
+          choose.type = "button";
+          choose.disabled = this._busy;
+          choose.setAttribute("aria-current", list.id === this._selected ? "page" : "false");
+          choose.addEventListener("click", () => this._selectList(list.id));
+          choose.append(icon("mdi:clipboard-list-outline"), el("span", list.name, "ha-plus-collection-name"));
+          const count = list.items.filter((item) => item.status !== "completed").length;
+          const countLabel = el("span", list.error ? this._t("unavailable") : formatNumber(this._hass, count), "ha-plus-collection-count");
+          countLabel.setAttribute("aria-label", list.error ? this._t("unavailable") : `${count} remaining`);
+          choose.append(countLabel);
+          items.append(choose);
+        }
+      }
+      nav.append(items);
+      if (canCreate) {
+        const actions = el("div", void 0, "ha-plus-collection-create");
+        actions.append(this._createButton("create-list"));
+        nav.append(actions);
+      }
+      const body = el("div", void 0, "ha-plus-collection-body");
+      const mobile = el("div", void 0, "ha-plus-collection-mobile");
+      if (lists.length > 1) {
+        const choices = lists.map((list) => [list.id, list.metadata.group ? `${list.metadata.group} \xB7 ${list.name}` : list.name]);
+        mobile.append(nativeForm(this._hass, [{ ...selectField("list", "To-do list", options(choices)), required: true }], { list: this._selected }, (data) => this._selectList(data.list)));
+      }
+      if (canCreate) mobile.append(this._createButton("create-list-mobile"));
+      body.append(mobile);
+      const content = el("div");
       const message = this._error || this._connectionError || this._uiError || "";
       const status = el("ha-alert", message, "notice");
       status.setAttribute("alert-type", "error");
       status.setAttribute("role", "status");
       status.dataset.status = "";
       status.hidden = !message;
-      main.append(status);
-      if (this._data?.admin && !this._config?.entity) {
-        const add = actionButton(this._t("create_list"), () => this._open({ type: "create_list" }, "create-list"), this._busy, "accent");
-        add.dataset.focus = "create-list";
-        const actions = el("div", void 0, "ha-plus-toolbar");
-        actions.append(add);
-        main.append(actions);
-      }
-      if (this._uiError) main.append(actionButton(this._t("try_again"), () => this._loadComponents()));
+      content.append(status);
+      if (this._uiError) content.append(actionButton(this._t("try_again"), () => this._loadComponents()));
       if (!this._componentsReady || !this._data) {
-        main.append(el("p", this._t("loading_your_lists"), "empty"));
-      } else {
-        const lists = this._data.lists.filter((list) => !this._config?.entity || list.entity_id === this._config.entity);
-        if (!lists.some((list) => list.id === this._selected)) this._selected = lists[0]?.id;
-        if (!lists.length) {
-          const empty = el("ha-card");
-          const body = el("div", void 0, "empty");
-          body.append(el("h2", this._t("no_to_do_lists")), el("p", this._t("create_a_list_with_local_to_do_or_connect_another_to_do_provider")));
-          const link = el("a", this._t("open_integrations"));
-          link.href = "/config/integrations";
-          body.append(link);
-          empty.append(body);
-          main.append(empty);
-        } else {
-          const mobile = el("div", void 0, "mobile-lists");
-          if (lists.length > 1) {
-            const choices = lists.map((list) => [list.id, list.metadata.group ? `${list.metadata.group} \xB7 ${list.name}` : list.name]);
-            mobile.append(nativeForm(this._hass, [{ ...selectField("list", "To-do list", options(choices)), required: true }], { list: this._selected }, (data) => this._selectList(data.list)));
-          }
-          const layout = el("div", void 0, "layout");
-          const nav = el("nav");
-          nav.setAttribute("aria-label", this._t("to_do_lists"));
-          for (const group of [...new Set(lists.map((list) => list.metadata.group || "Ungrouped"))].sort()) {
-            nav.append(el("h2", group));
-            for (const list of lists.filter((list2) => (list2.metadata.group || "Ungrouped") === group)) {
-              const choose = el("button", void 0, `list-button${list.id === this._selected ? " active" : ""}`);
-              choose.type = "button";
-              choose.disabled = this._busy;
-              choose.setAttribute("aria-current", list.id === this._selected ? "page" : "false");
-              choose.addEventListener("click", () => this._selectList(list.id));
-              choose.append(icon("mdi:clipboard-list-outline"), el("span", list.name, "list-name"));
-              const count = list.items.filter((item) => item.status !== "completed").length;
-              const countLabel = el("span", list.error ? this._t("unavailable") : formatNumber(this._hass, count), "list-count");
-              countLabel.setAttribute("aria-label", list.error ? this._t("unavailable") : `${count} remaining`);
-              choose.append(countLabel);
-              nav.append(choose);
-            }
-          }
-          const body = el("div");
-          body.append(mobile, this._list(lists.find((list) => list.id === this._selected)));
-          layout.append(nav, body);
-          main.append(layout);
-        }
-      }
+        content.append(el("p", this._t("loading_your_lists"), "empty"));
+      } else if (!lists.length) {
+        const empty = el("ha-card");
+        const description = el("div", void 0, "empty");
+        description.append(el("h2", this._t("no_to_do_lists")), el("p", this._t("create_a_list_with_local_to_do_or_connect_another_to_do_provider")));
+        const link = el("a", this._t("open_integrations"));
+        link.href = "/config/integrations";
+        description.append(link);
+        empty.append(description);
+        content.className = "content";
+        content.append(empty);
+      } else content.append(this._list(lists.find((list) => list.id === this._selected)));
+      body.append(content);
+      if (!compact) body.append(appFooter({
+        githubUrl: "https://github.com/zvikarp/ha-plus-lists",
+        documentationUrl: "https://github.com/zvikarp/ha-plus-lists#readme",
+        version: this._panel?.config?.version
+      }));
+      main.append(nav, body);
       frame.append(main);
       root.replaceChildren(el("style", collectionStyles), frame);
       if (this._editor) root.append(this._dialog());

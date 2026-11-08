@@ -42,7 +42,7 @@ async def async_register_frontend(hass):
         sidebar_icon="lists-plus:logo",
         module_url=url,
         require_admin=False,
-        config={},
+        config={"version": str(integration.version)},
     )
 
 
