@@ -1115,7 +1115,7 @@
   }
 
   // node_modules/@ha-plus/ui/src/index.js
-  /*! @ha-plus/ui v0.4.0-rc.3 | MIT | Copyright (c) 2026 HA+ contributors | https://github.com/zvikarp/ha-plus-packages/blob/main/LICENSE */
+  /*! @ha-plus/ui v0.4.0-rc.4 | MIT | Copyright (c) 2026 HA+ contributors | https://github.com/zvikarp/ha-plus-packages/blob/main/LICENSE */
   function panelHeader(title, { hass, narrow, actions = [], subtitle } = {}) {
     const header = el("header", void 0, "ha-plus-header");
     const menu = el("ha-menu-button");
