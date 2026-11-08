@@ -235,12 +235,45 @@ async def test_websocket_and_automation_service(
 
 
 async def test_real_frontend_registration(hass, loaded, hass_client):
+    # Simulate a running instance that registered assets before the extraction.
+    from pathlib import Path
+
+    from homeassistant.components import frontend
+    from homeassistant.components.http import StaticPathConfig
+    from homeassistant.components.panel_custom import async_register_panel
+
     from custom_components.lists_plus.frontend import (
         async_register_frontend,
         async_unregister_frontend,
     )
 
+    source = Path(__file__).parents[1] / "custom_components/lists_plus"
+    await hass.http.async_register_static_paths(
+        [
+            StaticPathConfig(
+                "/lists_plus/lists-plus.js",
+                str(source / "frontend/lists-plus.js"),
+                cache_headers=False,
+            ),
+            StaticPathConfig(
+                "/lists_plus/icon.png",
+                str(source / "brand/icon.png"),
+                cache_headers=False,
+            ),
+        ]
+    )
+    previous_module = "/lists_plus/lists-plus.js?v=0.0.1"
+    frontend.add_extra_js_url(hass, previous_module)
+    await async_register_panel(
+        hass,
+        webcomponent_name="lists-plus-panel",
+        frontend_url_path="ha-plus-lists",
+        sidebar_title="HA+ Lists",
+        module_url=previous_module,
+    )
+    hass.data["lists_plus_frontend_registered"] = True
     await async_register_frontend(hass)
+    assert previous_module not in hass.data[frontend.DATA_EXTRA_MODULE_URL].urls
     assert hass.data["frontend_panels"]["ha-plus-lists"].sidebar_title == "HA+ Lists"
     assert (
         hass.data["frontend_panels"]["ha-plus-lists"].sidebar_icon == "lists-plus:logo"
