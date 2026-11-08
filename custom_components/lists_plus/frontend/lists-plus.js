@@ -159,7 +159,7 @@
   .listbox { position:absolute; z-index:10; inset-inline:0; top:100%; margin-top:4px; max-height:300px; overflow:auto; padding:6px; background:var(--card-background-color,#fff); border:1px solid var(--divider-color,#e0e0e0); border-radius:14px; box-shadow:var(--ha-card-box-shadow,0 4px 16px #0003); }
   .option { display:block; width:100%; text-align:start; border-radius:10px; background:transparent; color:var(--primary-text-color,#212121); white-space:normal; overflow-wrap:anywhere; }
   .option[aria-selected=true] { color:var(--primary-color,#03a9f4); background:var(--secondary-background-color,#f5f5f5); }
-  .ha-plus-header { display:flex; align-items:center; gap:12px; padding:12px 16px; min-height:64px; background:var(--app-header-background-color,var(--primary-background-color,#fafafa)); color:var(--app-header-text-color,var(--primary-text-color,#212121)); }
+  .ha-plus-header { display:flex; align-items:center; gap:12px; padding:4px 16px; min-height:var(--header-height,56px); background:var(--app-header-background-color,var(--primary-background-color,#fafafa)); color:var(--app-header-text-color,var(--primary-text-color,#212121)); }
   .ha-plus-header h1 { font-size:20px; font-weight:400; flex:1; margin:0; }
   .ha-plus-content { max-width:1000px; margin:auto; padding:24px; }
   .notice { padding:12px 16px; margin-bottom:16px; background:var(--secondary-background-color,#f5f5f5); border-radius:14px; overflow-wrap:anywhere; }
@@ -598,7 +598,7 @@
     z-index: 1;
     display: flex;
     align-items: center;
-    height: var(--header-height, 64px);
+    height: var(--header-height, 56px);
     padding: 0 12px;
     color: var(--app-header-text-color);
     background: var(--app-header-background-color);
@@ -615,7 +615,7 @@
   .layout {
     display: grid;
     grid-template-columns: 256px minmax(0, 1fr);
-    min-height: calc(100dvh - var(--header-height, 64px));
+    min-height: calc(100dvh - var(--header-height, 56px));
   }
 
   nav {
@@ -1115,7 +1115,7 @@
   }
 
   // node_modules/@ha-plus/ui/src/index.js
-  /*! @ha-plus/ui v0.4.0-rc.1 | MIT | Copyright (c) 2026 HA+ contributors | https://github.com/zvikarp/ha-plus-packages/blob/main/LICENSE */
+  /*! @ha-plus/ui v0.4.0-rc.3 | MIT | Copyright (c) 2026 HA+ contributors | https://github.com/zvikarp/ha-plus-packages/blob/main/LICENSE */
   function panelHeader(title, { hass, narrow, actions = [], subtitle } = {}) {
     const header = el("header", void 0, "ha-plus-header");
     const menu = el("ha-menu-button");
