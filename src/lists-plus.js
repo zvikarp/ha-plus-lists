@@ -2,7 +2,7 @@ import messages from "./translations/en.json";
 import { localize, haContext } from "@ha-plus/ui";
 const t = (key, values) => localize(haContext(), messages, key, values);
 
-import { collectionStyles, el, icon, actionButton, iconButton, nativeTextField as textField, nativeForm, loadNativeComponents, applyPreferences, formatDateTime, formatNumber, showToast, panelHeader, integrationUrl, navigate } from "@ha-plus/ui";
+import { collectionStyles, el, icon, actionButton, iconButton, nativeTextField as textField, nativeForm, loadNativeComponents, applyPreferences, formatDateTime, formatNumber, showToast, panelHeader } from "@ha-plus/ui";
 
 /* HA+ Lists: bundled, local, themed UI with no runtime dependencies. */
 // Supplied ha-plus-lists-mono.svg, flattened for Home Assistant's icon API.
@@ -168,6 +168,13 @@ class ListsView extends HTMLElement {
       const data = await this._hass.callWS({ type: "lists_plus/snapshot" });
       if (epoch !== this._epoch) return;
       this._data = data;
+      if (this._pendingList) {
+        const created = data.lists.find(list => list.name === this._pendingList.name && !this._pendingList.ids.has(list.id));
+        if (created) {
+          this._selected = created.id;
+          this._pendingList = null;
+        }
+      }
       this._connectionError = "";
       const typing = this.shadowRoot.activeElement?.matches("ha-form,ha-input,ha-textfield");
       if (!this._editor && !this._busy && !typing) this._render();
@@ -227,6 +234,49 @@ class ListsView extends HTMLElement {
     }
   }
 
+  async _createList(name) {
+    if (this._busy) return;
+    name = name?.trim();
+    if (!name) {
+      this._error = this._t("list_name_required");
+      this._render();
+      return;
+    }
+    this._setBusy(true);
+    let flow;
+    try {
+      // Use HA's own authenticated Local To-do config flow and storage.
+      flow = await this._hass.callApi("POST", "config/config_entries/flow", {
+        handler: "local_todo", show_advanced_options: false,
+      });
+      if (flow.type !== "form" || flow.step_id !== "user") {
+        throw new Error(this._t("list_creation_failed"));
+      }
+      flow = await this._hass.callApi("POST", `config/config_entries/flow/${flow.flow_id}`, {
+        todo_list_name: name,
+      });
+      if (flow.type !== "create_entry") {
+        const message = flow.reason === "already_configured" ? "list_already_exists" : "list_creation_failed";
+        throw new Error(this._t(message));
+      }
+      this._pendingList = { name, ids: new Set(this._data.lists.map(list => list.id)) };
+      this._editor = null;
+      this._error = "";
+      this._busy = false;
+      await this._refresh();
+      this._render();
+      showToast(this, this._t("list_created"));
+    } catch (error) {
+      this._error = error.message || this._t("list_creation_failed");
+      this._busy = false;
+      this._render();
+    } finally {
+      if (flow?.type === "form" && flow.flow_id) {
+        this._hass.callApi("DELETE", `config/config_entries/flow/${flow.flow_id}`).catch(() => {});
+      }
+    }
+  }
+
   _open(editor, returnFocus = "settings") {
     if (this._busy) return;
     this._editor = editor;
@@ -255,7 +305,8 @@ class ListsView extends HTMLElement {
     const root = this.shadowRoot;
     const frame = el("div", undefined, this._config ? "compact" : "");
     const header = panelHeader("HA+ Lists", { hass: this._hass, narrow: this._narrow,
-      actions: [iconButton(this._t("common.refresh"), "mdi:refresh", () => this._refresh(), this._busy), ...(this._data?.admin ? [iconButton(this._t("integration_settings"), "mdi:cog", () => navigate(this, integrationUrl("lists_plus")))] : [])] });
+      domain: "lists_plus", iconUrl: "/lists_plus/icon.png",
+      onRefresh: () => this._refresh(), refreshing: this._busy });
     header.classList.add("toolbar");
     frame.append(header);
     const main = el("main");
@@ -266,6 +317,13 @@ class ListsView extends HTMLElement {
     status.dataset.status = "";
     status.hidden = !message;
     main.append(status);
+    if (this._data?.admin && !this._config?.entity) {
+      const add = actionButton(this._t("create_list"), () => this._open({ type: "create_list" }, "create-list"), this._busy, "accent");
+      add.dataset.focus = "create-list";
+      const actions = el("div", undefined, "ha-plus-toolbar");
+      actions.append(add);
+      main.append(actions);
+    }
     if (this._uiError) main.append(actionButton(this._t("try_again"), () => this._loadComponents()));
     if (!this._componentsReady || !this._data) {
       main.append(el("p", this._t("loading_your_lists"), "empty"));
@@ -460,7 +518,7 @@ class ListsView extends HTMLElement {
     const list = editor.list;
     const dialog = el("ha-dialog", undefined, "dialog");
     const modern = "headerTitle" in dialog;
-    const title = this._t({ item: "item_details", list: "list_settings", field: "add_custom_field", confirm: "confirm_deletion", rename: "rename_item" }[editor.type]);
+    const title = this._t({ item: "item_details", list: "list_settings", field: "add_custom_field", confirm: "confirm_deletion", rename: "rename_item", create_list: "create_list" }[editor.type]);
     dialog.heading = title;
     dialog.headerTitle = title;
     dialog.setAttribute("header-title", title);
@@ -480,7 +538,12 @@ class ListsView extends HTMLElement {
     body.append(status);
     const form = el("form");
     let save;
-    if (editor.type === "item" || editor.type === "list") {
+    if (editor.type === "create_list") {
+      let name = editor.name || "";
+      form.append(el("p", this._t("create_list_description")));
+      form.append(nativeForm(this._hass, [{ name: "name", label: this._t("list_name"), required: true, selector: { text: {} } }], { name }, data => { editor.name = name = data.name; }));
+      save = () => this._createList(name);
+    } else if (editor.type === "item" || editor.type === "list") {
       const scope = editor.type;
       const metadata = scope === "item" ? editor.item.metadata : list.metadata;
       let draft = metadataFormData(metadata, list, scope);
@@ -545,7 +608,7 @@ class ListsView extends HTMLElement {
     body.append(form);
     dialog.append(body);
     const cancel = actionButton(this._t("common.cancel"), () => this._close());
-    const confirm = actionButton(editor.type === "confirm" ? this._t("common.delete") : this._t("common.save"), submit, this._busy, editor.type === "confirm" ? "danger" : "accent");
+    const confirm = actionButton(editor.type === "confirm" ? this._t("common.delete") : editor.type === "create_list" ? this._t("create_list") : this._t("common.save"), submit, this._busy, editor.type === "confirm" ? "danger" : "accent");
     if (modern) {
       const footer = el("div", undefined, "dialog-footer");
       footer.slot = "footer";

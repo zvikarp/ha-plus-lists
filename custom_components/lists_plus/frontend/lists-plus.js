@@ -66,7 +66,14 @@
     rename_item: "Rename item",
     type: "Type",
     yes_no: "Yes / No",
-    applies_to: "Applies to"
+    applies_to: "Applies to",
+    create_list: "Create list",
+    list_name: "List name",
+    create_list_description: "Create a Home Assistant Local To-do list. It will also be available in Home Assistant\u2019s To-do lists.",
+    list_name_required: "Enter a list name.",
+    list_already_exists: "A local list with this name already exists.",
+    list_creation_failed: "The list could not be created. Try again.",
+    list_created: "List created"
   };
 
   // node_modules/@ha-plus/ui/src/dom.js
@@ -103,6 +110,7 @@
   function iconButton(label, name, handler, disabled = false) {
     const node = el("ha-icon-button");
     node.label = label;
+    node.setAttribute("aria-label", label);
     node.disabled = disabled;
     node.append(icon(name));
     node.addEventListener("click", () => {
@@ -135,7 +143,33 @@
   }
 
   // node_modules/@ha-plus/ui/src/styles.js
-  var themeStyles = `
+  var panelHeaderStyles = `
+  .ha-plus-header {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    height: var(--header-height, 56px);
+    min-height: var(--header-height, 56px);
+    padding: 0 12px;
+    box-sizing: border-box;
+    font-family: var(--ha-font-family-body, var(--primary-font-family, Roboto, sans-serif));
+    border-bottom: 1px solid var(--divider-color, #e0e0e0);
+    background: var(--app-header-background-color, var(--primary-background-color, #fafafa));
+    color: var(--app-header-text-color, var(--primary-text-color, #212121));
+  }
+  .ha-plus-header-heading { flex: 1; min-width: 0; }
+  .ha-plus-header h1 { margin: 0; font-size: 20px; font-weight: 400; line-height: 24px; overflow-wrap: anywhere; }
+  .ha-plus-header-icon { width: 32px; height: 32px; object-fit: contain; flex-shrink: 0; }
+  .ha-plus-header :is(ha-menu-button, ha-icon-button) { flex-shrink: 0; }
+  @media (max-width: 480px) {
+    .ha-plus-header { gap: 4px; padding-inline: 4px; }
+    .ha-plus-header h1 { font-size: 18px; line-height: 22px; }
+  }
+`;
+  var themeStyles = `${panelHeaderStyles}
   :host { display:block; color:var(--primary-text-color,#212121); font-family:var(--primary-font-family,var(--paper-font-body1_-_font-family,Roboto,sans-serif)); }
   *, *::before, *::after { box-sizing:border-box; }
   [hidden] { display:none !important; }
@@ -159,8 +193,6 @@
   .listbox { position:absolute; z-index:10; inset-inline:0; top:100%; margin-top:4px; max-height:300px; overflow:auto; padding:6px; background:var(--card-background-color,#fff); border:1px solid var(--divider-color,#e0e0e0); border-radius:14px; box-shadow:var(--ha-card-box-shadow,0 4px 16px #0003); }
   .option { display:block; width:100%; text-align:start; border-radius:10px; background:transparent; color:var(--primary-text-color,#212121); white-space:normal; overflow-wrap:anywhere; }
   .option[aria-selected=true] { color:var(--primary-color,#03a9f4); background:var(--secondary-background-color,#f5f5f5); }
-  .ha-plus-header { display:flex; align-items:center; gap:12px; padding:4px 16px; min-height:var(--header-height,56px); background:var(--app-header-background-color,var(--primary-background-color,#fafafa)); color:var(--app-header-text-color,var(--primary-text-color,#212121)); }
-  .ha-plus-header h1 { font-size:20px; font-weight:400; flex:1; margin:0; }
   .ha-plus-content { max-width:1000px; margin:auto; padding:24px; }
   .notice { padding:12px 16px; margin-bottom:16px; background:var(--secondary-background-color,#f5f5f5); border-radius:14px; overflow-wrap:anywhere; }
   .error { color:var(--error-color,#db4437); white-space:pre-wrap; }
@@ -179,7 +211,6 @@
   .ha-plus-dialog-actions { display: flex; flex-wrap: wrap; justify-content: end; gap: 8px; }
   ha-alert.notice { padding: 0; background: transparent; }
   ha-form.field { min-width: 0; }
-  .ha-plus-header { min-height: var(--header-height, 56px); border-bottom: 1px solid var(--divider-color, #e0e0e0); }
   ha-dialog { --mdc-dialog-min-width: min(420px, calc(100vw - 32px)); --mdc-dialog-max-width: 560px; }
 `;
   var appStyles = `${themeStyles}${nativeStyles}
@@ -279,13 +310,6 @@
     gap: 12px;
   }
 
-  .ha-plus-group {
-    border-inline-start: 4px solid var(--divider-color, #e0e0e0);
-  }
-
-  .ha-plus-group.active {
-    border-inline-start-color: var(--primary-color, #03a9f4);
-  }
 
   .ha-plus-value {
     margin: 12px 0 4px;
@@ -572,6 +596,133 @@
   }
 `;
 
+  // node_modules/@ha-plus/ui/src/preferences.js
+  function haContext() {
+    if (typeof window === "undefined") return void 0;
+    try {
+      return window.parent?.document.querySelector("home-assistant")?.hass || window.document.querySelector("home-assistant")?.hass;
+    } catch {
+      return void 0;
+    }
+  }
+  function preferences(hass = haContext()) {
+    const locale = hass?.locale || {};
+    const language = locale.language || hass?.language || "en";
+    const numberLocales = { comma_decimal: "en-US", decimal_comma: "de-DE", space_comma: "sv-SE" };
+    const numberLanguage = numberLocales[locale.number_format] || (locale.number_format === "system" && typeof navigator !== "undefined" ? navigator.language : language);
+    const direction = hass?.translationMetadata?.translations?.[language]?.isRTL || /^(ar|fa|he|ur)(-|$)/i.test(language) ? "rtl" : "ltr";
+    const dateLocales = { DMY: "en-GB", MDY: "en-US", YMD: "sv-SE" };
+    const dateLanguage = dateLocales[locale.date_format] || (locale.date_format === "system" && typeof navigator !== "undefined" ? navigator.language : language);
+    const timeLanguage = locale.time_format === "system" && typeof navigator !== "undefined" ? navigator.language : language;
+    const languageHour12 = new Intl.DateTimeFormat(timeLanguage, { hour: "numeric" }).resolvedOptions().hour12;
+    return {
+      dateLanguage,
+      language,
+      direction,
+      numberLanguage,
+      useGrouping: locale.number_format !== "none",
+      timeZone: locale.time_zone === "local" ? Intl.DateTimeFormat().resolvedOptions().timeZone : hass?.config?.time_zone,
+      hour12: ["12", "am_pm"].includes(locale.time_format) ? true : ["24", "twenty_four"].includes(locale.time_format) ? false : languageHour12,
+      unitSystem: { ...hass?.config?.unit_system }
+    };
+  }
+  function applyPreferences(host, hass) {
+    const value = preferences(hass);
+    if (host.getAttribute("dir") !== value.direction) host.setAttribute("dir", value.direction);
+    if (host.getAttribute("lang") !== value.language) host.setAttribute("lang", value.language);
+    return value;
+  }
+  function formatNumber(hass, value, options2 = {}) {
+    const settings = preferences(hass);
+    return new Intl.NumberFormat(settings.numberLanguage, { useGrouping: settings.useGrouping, ...options2 }).format(value);
+  }
+  function formatDateTime(hass, value, options2 = {}) {
+    const date = new Date(value);
+    if (!Number.isFinite(date.getTime())) return "\u2014";
+    const settings = preferences(hass);
+    const dateOnly = typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value);
+    return new Intl.DateTimeFormat(settings.dateLanguage, {
+      dateStyle: "medium",
+      timeStyle: dateOnly ? void 0 : "short",
+      timeZone: dateOnly ? "UTC" : settings.timeZone,
+      hour12: settings.hour12,
+      ...options2
+    }).format(date);
+  }
+
+  // node_modules/@ha-plus/ui/src/translations/en.json
+  var en_default2 = {
+    save: "Save",
+    cancel: "Cancel",
+    close: "Close",
+    delete: "Delete",
+    edit: "Edit",
+    add: "Add",
+    refresh: "Refresh",
+    loading: "Loading\u2026",
+    retry: "Retry",
+    settings: "Settings",
+    yes: "Yes",
+    no: "No",
+    apply: "Apply",
+    confirm: "Confirm",
+    more_actions: "More actions",
+    dashboard_load_failed: "Home Assistant's dashboard controls could not load. Reload and try again.",
+    controls_load_failed: "Home Assistant's to-do controls could not load. Reload and try again.",
+    component_load_failed: "Home Assistant could not load {component}. Reload and try again."
+  };
+
+  // node_modules/@ha-plus/ui/src/localize.js
+  var nativeKeys = {
+    save: "ui.common.save",
+    cancel: "ui.common.cancel",
+    close: "ui.common.close",
+    delete: "ui.common.delete",
+    edit: "ui.common.edit",
+    add: "ui.common.add",
+    refresh: "ui.common.refresh",
+    loading: "ui.common.loading",
+    retry: "ui.common.retry",
+    yes: "ui.common.yes",
+    no: "ui.common.no",
+    apply: "ui.common.apply"
+  };
+  function localize(hass, messages, key, values = {}) {
+    const shortKey = key.replace(/^common\./, "");
+    const nativeKey = nativeKeys[shortKey];
+    const native = nativeKey && hass?.localize?.(nativeKey);
+    const message = native && native !== nativeKey ? native : messages[key] || en_default2[shortKey] || key;
+    return String(message).replace(/\{([\w]+)\}/g, (match, name) => {
+      if (!Object.hasOwn(values, name)) return match;
+      return typeof values[name] === "number" ? formatNumber(hass, values[name]) : String(values[name]);
+    });
+  }
+
+  // node_modules/@ha-plus/ui/src/ha-actions.js
+  function integrationUrl(domain, add = false) {
+    if (!/^[a-z0-9_]+$/.test(domain)) throw new TypeError("Invalid integration domain");
+    return add ? `/config/integrations/dashboard/add?domain=${domain}` : `/config/integrations/integration/${domain}`;
+  }
+  function showToast(host, message) {
+    if (!host) {
+      try {
+        host = window.parent.document.querySelector("home-assistant");
+      } catch {
+        return false;
+      }
+    }
+    if (!host) return false;
+    const Event = host.ownerDocument.defaultView.CustomEvent;
+    host.dispatchEvent(new Event("hass-notification", { bubbles: true, composed: true, detail: { message } }));
+    return true;
+  }
+  function navigate(host, path) {
+    if (!path.startsWith("/") || path.startsWith("//")) throw new TypeError("Navigation must stay within Home Assistant");
+    const view = host?.ownerDocument.defaultView || window.parent;
+    view.history.pushState(null, "", path);
+    view.dispatchEvent(new view.CustomEvent("location-changed", { detail: { replace: false } }));
+  }
+
   // node_modules/@ha-plus/ui/src/collections.js
   var collectionStyles = `${appStyles}
 
@@ -590,26 +741,6 @@
 
   [hidden] {
     display: none !important;
-  }
-
-  .toolbar {
-    position: sticky;
-    top: 0;
-    z-index: 1;
-    display: flex;
-    align-items: center;
-    height: var(--header-height, 56px);
-    padding: 0 12px;
-    color: var(--app-header-text-color);
-    background: var(--app-header-background-color);
-    border-bottom: 1px solid var(--divider-color);
-  }
-
-  .toolbar h1 {
-    flex: 1;
-    margin: 0 16px;
-    font-size: var(--ha-font-size-xl, 20px);
-    font-weight: var(--ha-font-weight-normal, 400);
   }
 
   .layout {
@@ -941,108 +1072,6 @@
   }
 `;
 
-  // node_modules/@ha-plus/ui/src/preferences.js
-  function haContext() {
-    if (typeof window === "undefined") return void 0;
-    try {
-      return window.parent?.document.querySelector("home-assistant")?.hass || window.document.querySelector("home-assistant")?.hass;
-    } catch {
-      return void 0;
-    }
-  }
-  function preferences(hass = haContext()) {
-    const locale = hass?.locale || {};
-    const language = locale.language || hass?.language || "en";
-    const numberLocales = { comma_decimal: "en-US", decimal_comma: "de-DE", space_comma: "sv-SE" };
-    const numberLanguage = numberLocales[locale.number_format] || (locale.number_format === "system" && typeof navigator !== "undefined" ? navigator.language : language);
-    const direction = hass?.translationMetadata?.translations?.[language]?.isRTL || /^(ar|fa|he|ur)(-|$)/i.test(language) ? "rtl" : "ltr";
-    const dateLocales = { DMY: "en-GB", MDY: "en-US", YMD: "sv-SE" };
-    const dateLanguage = dateLocales[locale.date_format] || (locale.date_format === "system" && typeof navigator !== "undefined" ? navigator.language : language);
-    const timeLanguage = locale.time_format === "system" && typeof navigator !== "undefined" ? navigator.language : language;
-    const languageHour12 = new Intl.DateTimeFormat(timeLanguage, { hour: "numeric" }).resolvedOptions().hour12;
-    return {
-      dateLanguage,
-      language,
-      direction,
-      numberLanguage,
-      useGrouping: locale.number_format !== "none",
-      timeZone: locale.time_zone === "local" ? Intl.DateTimeFormat().resolvedOptions().timeZone : hass?.config?.time_zone,
-      hour12: ["12", "am_pm"].includes(locale.time_format) ? true : ["24", "twenty_four"].includes(locale.time_format) ? false : languageHour12,
-      unitSystem: { ...hass?.config?.unit_system }
-    };
-  }
-  function applyPreferences(host, hass) {
-    const value = preferences(hass);
-    if (host.getAttribute("dir") !== value.direction) host.setAttribute("dir", value.direction);
-    if (host.getAttribute("lang") !== value.language) host.setAttribute("lang", value.language);
-    return value;
-  }
-  function formatNumber(hass, value, options2 = {}) {
-    const settings = preferences(hass);
-    return new Intl.NumberFormat(settings.numberLanguage, { useGrouping: settings.useGrouping, ...options2 }).format(value);
-  }
-  function formatDateTime(hass, value, options2 = {}) {
-    const date = new Date(value);
-    if (!Number.isFinite(date.getTime())) return "\u2014";
-    const settings = preferences(hass);
-    const dateOnly = typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value);
-    return new Intl.DateTimeFormat(settings.dateLanguage, {
-      dateStyle: "medium",
-      timeStyle: dateOnly ? void 0 : "short",
-      timeZone: dateOnly ? "UTC" : settings.timeZone,
-      hour12: settings.hour12,
-      ...options2
-    }).format(date);
-  }
-
-  // node_modules/@ha-plus/ui/src/translations/en.json
-  var en_default2 = {
-    save: "Save",
-    cancel: "Cancel",
-    close: "Close",
-    delete: "Delete",
-    edit: "Edit",
-    add: "Add",
-    refresh: "Refresh",
-    loading: "Loading\u2026",
-    retry: "Retry",
-    settings: "Settings",
-    yes: "Yes",
-    no: "No",
-    apply: "Apply",
-    confirm: "Confirm",
-    more_actions: "More actions",
-    dashboard_load_failed: "Home Assistant's dashboard controls could not load. Reload and try again.",
-    controls_load_failed: "Home Assistant's to-do controls could not load. Reload and try again.",
-    component_load_failed: "Home Assistant could not load {component}. Reload and try again."
-  };
-
-  // node_modules/@ha-plus/ui/src/localize.js
-  var nativeKeys = {
-    save: "ui.common.save",
-    cancel: "ui.common.cancel",
-    close: "ui.common.close",
-    delete: "ui.common.delete",
-    edit: "ui.common.edit",
-    add: "ui.common.add",
-    refresh: "ui.common.refresh",
-    loading: "ui.common.loading",
-    retry: "ui.common.retry",
-    yes: "ui.common.yes",
-    no: "ui.common.no",
-    apply: "ui.common.apply"
-  };
-  function localize(hass, messages, key, values = {}) {
-    const shortKey = key.replace(/^common\./, "");
-    const nativeKey = nativeKeys[shortKey];
-    const native = nativeKey && hass?.localize?.(nativeKey);
-    const message = native && native !== nativeKey ? native : messages[key] || en_default2[shortKey] || key;
-    return String(message).replace(/\{([\w]+)\}/g, (match, name) => {
-      if (!Object.hasOwn(values, name)) return match;
-      return typeof values[name] === "number" ? formatNumber(hass, values[name]) : String(values[name]);
-    });
-  }
-
   // node_modules/@ha-plus/ui/src/loader.js
   var nativeComponents;
   async function loadNativeComponents(host) {
@@ -1089,34 +1118,9 @@
     await nativeComponents;
   }
 
-  // node_modules/@ha-plus/ui/src/ha-actions.js
-  function integrationUrl(domain, add = false) {
-    if (!/^[a-z0-9_]+$/.test(domain)) throw new TypeError("Invalid integration domain");
-    return add ? `/config/integrations/dashboard/add?domain=${domain}` : `/config/integrations/integration/${domain}`;
-  }
-  function showToast(host, message) {
-    if (!host) {
-      try {
-        host = window.parent.document.querySelector("home-assistant");
-      } catch {
-        return false;
-      }
-    }
-    if (!host) return false;
-    const Event = host.ownerDocument.defaultView.CustomEvent;
-    host.dispatchEvent(new Event("hass-notification", { bubbles: true, composed: true, detail: { message } }));
-    return true;
-  }
-  function navigate(host, path) {
-    if (!path.startsWith("/") || path.startsWith("//")) throw new TypeError("Navigation must stay within Home Assistant");
-    const view = host?.ownerDocument.defaultView || window.parent;
-    view.history.pushState(null, "", path);
-    view.dispatchEvent(new view.CustomEvent("location-changed", { detail: { replace: false } }));
-  }
-
   // node_modules/@ha-plus/ui/src/index.js
-  /*! @ha-plus/ui v0.4.0-rc.4 | MIT | Copyright (c) 2026 HA+ contributors | https://github.com/zvikarp/ha-plus-packages/blob/main/LICENSE */
-  function panelHeader(title, { hass, narrow, actions = [], subtitle } = {}) {
+  /*! @ha-plus/ui v0.3.2 | MIT | Copyright (c) 2026 HA+ contributors | https://github.com/zvikarp/ha-plus-packages/blob/main/LICENSE */
+  function panelHeader(title, { hass, narrow, actions = [], subtitle, domain, iconUrl, onRefresh, refreshing = false } = {}) {
     const header = el("header", void 0, "ha-plus-header");
     const menu = el("ha-menu-button");
     menu.hass = hass;
@@ -1124,7 +1128,21 @@
     const heading = el("div", void 0, "ha-plus-header-heading");
     heading.append(el("h1", title));
     if (subtitle) heading.append(el("p", subtitle, "ha-plus-muted"));
-    header.append(menu, heading, ...actions);
+    header.append(menu);
+    if (iconUrl) {
+      const logo = el("img", void 0, "ha-plus-header-icon");
+      logo.src = iconUrl;
+      logo.alt = "";
+      header.append(logo);
+    }
+    header.append(heading);
+    if (onRefresh) header.append(iconButton(localize(hass, {}, "common.refresh"), "mdi:refresh", onRefresh, refreshing));
+    header.append(...actions);
+    if (domain && hass?.user?.is_admin) {
+      const settings = iconButton(localize(hass, {}, "settings"), "mdi:cog", () => navigate(header, integrationUrl(domain)));
+      settings.dataset.settings = "";
+      header.append(settings);
+    }
     return header;
   }
 
@@ -1285,6 +1303,13 @@
         const data = await this._hass.callWS({ type: "lists_plus/snapshot" });
         if (epoch !== this._epoch) return;
         this._data = data;
+        if (this._pendingList) {
+          const created = data.lists.find((list) => list.name === this._pendingList.name && !this._pendingList.ids.has(list.id));
+          if (created) {
+            this._selected = created.id;
+            this._pendingList = null;
+          }
+        }
         this._connectionError = "";
         const typing = this.shadowRoot.activeElement?.matches("ha-form,ha-input,ha-textfield");
         if (!this._editor && !this._busy && !typing) this._render();
@@ -1341,6 +1366,49 @@
         } else this._render();
       }
     }
+    async _createList(name) {
+      if (this._busy) return;
+      name = name?.trim();
+      if (!name) {
+        this._error = this._t("list_name_required");
+        this._render();
+        return;
+      }
+      this._setBusy(true);
+      let flow;
+      try {
+        flow = await this._hass.callApi("POST", "config/config_entries/flow", {
+          handler: "local_todo",
+          show_advanced_options: false
+        });
+        if (flow.type !== "form" || flow.step_id !== "user") {
+          throw new Error(this._t("list_creation_failed"));
+        }
+        flow = await this._hass.callApi("POST", `config/config_entries/flow/${flow.flow_id}`, {
+          todo_list_name: name
+        });
+        if (flow.type !== "create_entry") {
+          const message = flow.reason === "already_configured" ? "list_already_exists" : "list_creation_failed";
+          throw new Error(this._t(message));
+        }
+        this._pendingList = { name, ids: new Set(this._data.lists.map((list) => list.id)) };
+        this._editor = null;
+        this._error = "";
+        this._busy = false;
+        await this._refresh();
+        this._render();
+        showToast(this, this._t("list_created"));
+      } catch (error) {
+        this._error = error.message || this._t("list_creation_failed");
+        this._busy = false;
+        this._render();
+      } finally {
+        if (flow?.type === "form" && flow.flow_id) {
+          this._hass.callApi("DELETE", `config/config_entries/flow/${flow.flow_id}`).catch(() => {
+          });
+        }
+      }
+    }
     _open(editor, returnFocus = "settings") {
       if (this._busy) return;
       this._editor = editor;
@@ -1368,7 +1436,10 @@
       const header = panelHeader("HA+ Lists", {
         hass: this._hass,
         narrow: this._narrow,
-        actions: [iconButton(this._t("common.refresh"), "mdi:refresh", () => this._refresh(), this._busy), ...this._data?.admin ? [iconButton(this._t("integration_settings"), "mdi:cog", () => navigate(this, integrationUrl("lists_plus")))] : []]
+        domain: "lists_plus",
+        iconUrl: "/lists_plus/icon.png",
+        onRefresh: () => this._refresh(),
+        refreshing: this._busy
       });
       header.classList.add("toolbar");
       frame.append(header);
@@ -1380,6 +1451,13 @@
       status.dataset.status = "";
       status.hidden = !message;
       main.append(status);
+      if (this._data?.admin && !this._config?.entity) {
+        const add = actionButton(this._t("create_list"), () => this._open({ type: "create_list" }, "create-list"), this._busy, "accent");
+        add.dataset.focus = "create-list";
+        const actions = el("div", void 0, "ha-plus-toolbar");
+        actions.append(add);
+        main.append(actions);
+      }
       if (this._uiError) main.append(actionButton(this._t("try_again"), () => this._loadComponents()));
       if (!this._componentsReady || !this._data) {
         main.append(el("p", this._t("loading_your_lists"), "empty"));
@@ -1568,7 +1646,7 @@
       const list = editor.list;
       const dialog = el("ha-dialog", void 0, "dialog");
       const modern = "headerTitle" in dialog;
-      const title = this._t({ item: "item_details", list: "list_settings", field: "add_custom_field", confirm: "confirm_deletion", rename: "rename_item" }[editor.type]);
+      const title = this._t({ item: "item_details", list: "list_settings", field: "add_custom_field", confirm: "confirm_deletion", rename: "rename_item", create_list: "create_list" }[editor.type]);
       dialog.heading = title;
       dialog.headerTitle = title;
       dialog.setAttribute("header-title", title);
@@ -1588,7 +1666,14 @@
       body.append(status);
       const form = el("form");
       let save;
-      if (editor.type === "item" || editor.type === "list") {
+      if (editor.type === "create_list") {
+        let name = editor.name || "";
+        form.append(el("p", this._t("create_list_description")));
+        form.append(nativeForm(this._hass, [{ name: "name", label: this._t("list_name"), required: true, selector: { text: {} } }], { name }, (data) => {
+          editor.name = name = data.name;
+        }));
+        save = () => this._createList(name);
+      } else if (editor.type === "item" || editor.type === "list") {
         const scope = editor.type;
         const metadata = scope === "item" ? editor.item.metadata : list.metadata;
         let draft = metadataFormData(metadata, list, scope);
@@ -1665,7 +1750,7 @@
       body.append(form);
       dialog.append(body);
       const cancel = actionButton(this._t("common.cancel"), () => this._close());
-      const confirm = actionButton(editor.type === "confirm" ? this._t("common.delete") : this._t("common.save"), submit, this._busy, editor.type === "confirm" ? "danger" : "accent");
+      const confirm = actionButton(editor.type === "confirm" ? this._t("common.delete") : editor.type === "create_list" ? this._t("create_list") : this._t("common.save"), submit, this._busy, editor.type === "confirm" ? "danger" : "accent");
       if (modern) {
         const footer = el("div", void 0, "dialog-footer");
         footer.slot = "footer";

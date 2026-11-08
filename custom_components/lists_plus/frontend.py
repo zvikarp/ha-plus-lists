@@ -21,10 +21,15 @@ async def async_register_frontend(hass):
         await hass.http.async_register_static_paths(
             [
                 StaticPathConfig(
+                    "/lists_plus/icon.png",
+                    str(Path(__file__).parent / "brand/icon.png"),
+                    cache_headers=False,
+                ),
+                StaticPathConfig(
                     PATH,
                     str(Path(__file__).parent / "frontend/lists-plus.js"),
                     cache_headers=False,
-                )
+                ),
             ]
         )
         add_extra_js_url(hass, url)

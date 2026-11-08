@@ -64,5 +64,12 @@
   "rename_item": "Rename item",
   "type": "Type",
   "yes_no": "Yes / No",
-  "applies_to": "Applies to"
+  "applies_to": "Applies to",
+  "create_list": "Create list",
+  "list_name": "List name",
+  "create_list_description": "Create a Home Assistant Local To-do list. It will also be available in Home Assistant’s To-do lists.",
+  "list_name_required": "Enter a list name.",
+  "list_already_exists": "A local list with this name already exists.",
+  "list_creation_failed": "The list could not be created. Try again.",
+  "list_created": "List created"
 }

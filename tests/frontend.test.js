@@ -213,7 +213,7 @@ test("untrusted text remains plain text in a standalone dashboard card", async (
   const data = snapshot();
   data.lists[0].items[0].summary = '<img src=x onerror="alert(1)">';
   const { panel } = await setup(data, false, "lists-plus-card");
-  assert.equal(panel.shadowRoot.querySelector("img"), null);
+  assert.equal(panel.shadowRoot.querySelector("main img"), null);
   assert.ok([...panel.shadowRoot.children].map((node) => node.textContent).join(" ").includes("<img src=x"));
   assert.ok(panel.shadowRoot.querySelector(".compact"));
   panel.remove();
@@ -294,4 +294,41 @@ test('panel and dashboard card use only the shared collection stylesheet', async
     assert.equal(panel.shadowRoot.querySelector('style').textContent, collectionStyles);
     assert.equal(panel.shadowRoot.querySelector('[style]'), null);
   }
+});
+
+test('list creation uses HA Local To-do flow, prevents duplicate submissions and selects the new list', async () => {
+  const data = snapshot();
+  const { panel, hass } = await setup(data);
+  const calls = [];
+  let complete;
+  hass.callApi = async (method, path, body) => {
+    calls.push({ method, path, body });
+    if (path === 'config/config_entries/flow') return { type: 'form', step_id: 'user', flow_id: 'new-list' };
+    await new Promise(resolve => { complete = resolve; });
+    data.lists.push({ ...data.lists[0], id: 'new-id', entity_id: 'todo.packing', name: 'Packing', items: [] });
+    return { type: 'create_entry' };
+  };
+  panel._open({ type: 'create_list' });
+  const pending = panel._createList(' Packing ');
+  await tick();
+  await panel._createList('Packing');
+  assert.equal(calls.length, 2);
+  assert.equal(calls[1].body.todo_list_name, 'Packing');
+  complete();
+  await pending;
+  assert.equal(panel._selected, 'new-id');
+  assert.equal(panel._editor, null);
+  assert.equal(panel._busy, false);
+});
+
+test('duplicate list creation stays in the dialog with an actionable error', async () => {
+  const { panel, hass } = await setup();
+  hass.callApi = async (_, path) => path === 'config/config_entries/flow'
+    ? { type: 'form', step_id: 'user', flow_id: 'duplicate' }
+    : { type: 'abort', reason: 'already_configured' };
+  panel._open({ type: 'create_list', name: 'Groceries' });
+  await panel._createList('Groceries');
+  assert.equal(panel._editor.type, 'create_list');
+  assert.match(panel._error, /already exists/);
+  assert.equal(panel._busy, false);
 });
