@@ -1,4 +1,8 @@
-import { collectionStyles, el, icon, actionButton, iconButton, nativeTextField as textField, nativeForm } from "@ha-plus/ui";
+import messages from "./translations/en.json";
+import { localize, haContext } from "@ha-plus/ui";
+const t = (key, values) => localize(haContext(), messages, key, values);
+
+import { collectionStyles, el, icon, actionButton, iconButton, nativeTextField as textField, nativeForm, loadNativeComponents, applyPreferences, formatDateTime, formatNumber, showToast, panelHeader, integrationUrl, navigate } from "@ha-plus/ui";
 
 /* HA+ Lists: bundled, local, themed UI with no runtime dependencies. */
 // Supplied ha-plus-lists-mono.svg, flattened for Home Assistant's icon API.
@@ -9,56 +13,6 @@ window.customIcons["lists-plus"] = {
     ? { path: LOGO_PATH, viewBox: "0 0 513 512" }
     : undefined,
 };
-
-// Load HA's own lazily registered controls when this panel is opened directly.
-let nativeComponents;
-
-async function loadNativeComponents(host) {
-  const required = ["ha-form", "ha-checkbox", "ha-dialog", "ha-icon-button"];
-  if (required.every((name) => customElements.get(name))) return;
-  if (!nativeComponents) {
-    nativeComponents = (async () => {
-      if (!window.loadCardHelpers) {
-        // Reuse the owning HA router's dashboard loader without navigating or
-        // constructing a second dashboard. Its bundle exposes loadCardHelpers.
-        let resolver = host;
-        while (resolver && resolver.localName !== "partial-panel-resolver") {
-          resolver = resolver.parentElement || resolver.getRootNode().host;
-        }
-        const dashboard = Object.values(resolver?.routerOptions?.routes || {})
-          .find((route) => route.tag === "ha-panel-lovelace");
-        if (!dashboard?.load) {
-          throw new Error("Home Assistant's dashboard controls could not load. Reload and try again.");
-        }
-        await dashboard.load();
-      }
-      const helpers = await window.loadCardHelpers();
-      const entities = helpers.createCardElement({ type: "entities", entities: [] });
-      await entities.constructor.getConfigElement();
-      helpers.createCardElement({ type: "todo-list", entity: "todo.lists_plus" });
-      let loadingTimeout;
-      try {
-        await Promise.race([
-          customElements.whenDefined("hui-todo-list-card"),
-          new Promise((_, reject) => {
-            loadingTimeout = setTimeout(() => reject(new Error("Home Assistant's to-do controls could not load. Reload and try again.")), 15000);
-          }),
-        ]);
-      } finally {
-        clearTimeout(loadingTimeout);
-      }
-      for (const name of required) {
-        if (!customElements.get(name)) {
-          throw new Error(`Home Assistant could not load ${name}. Reload and try again.`);
-        }
-      }
-    })().catch((error) => {
-      nativeComponents = undefined;
-      throw error;
-    });
-  }
-  await nativeComponents;
-}
 
 function selectField(name, label, choices) {
   return {
@@ -78,13 +32,13 @@ function feature(list, bit) {
 
 function metadataSchema(list, scope, people) {
   const schema = [
-    { name: "group", label: scope === "list" ? "List group" : "Item group", selector: { text: {} } },
-    { name: "tags", label: "Tags", selector: { text: { multiple: true } } },
+    { name: "group", label: scope === "list" ? t("list_group") : t("item_group"), selector: { text: {} } },
+    { name: "tags", label: t("tags"), selector: { text: { multiple: true } } },
   ];
   if (scope === "item") {
     schema.push({
       name: "assignee",
-      label: "Assigned to",
+      label: t("assigned_to"),
       selector: { entity: { domain: "person", include_entities: people.map((person) => person.id) } },
     });
   }
@@ -98,7 +52,7 @@ function metadataSchema(list, scope, people) {
         selector = { area: {} };
         break;
       case "boolean":
-        selector = { select: { mode: "dropdown", options: options([["unset", "Not set"], ["true", "Yes"], ["false", "No"]]) } };
+        selector = { select: { mode: "dropdown", options: options([["unset", t("not_set")], ["true", t("yes")], ["false", t("no")]]) } };
         break;
       default:
         selector = { text: {} };
@@ -135,6 +89,8 @@ function metadataFromForm(data, list, scope) {
 
 
 class ListsView extends HTMLElement {
+  _t(key, values) { return localize(this._hass, messages, key, values); }
+
   constructor() {
     super();
     this.attachShadow({ mode: "open" });
@@ -145,6 +101,9 @@ class ListsView extends HTMLElement {
   set hass(value) {
     const previous = this._hass;
     this._hass = value;
+    applyPreferences(this, value);
+    const menu = this.shadowRoot.querySelector("ha-menu-button");
+    if (menu) menu.hass = value;
     this.shadowRoot.querySelectorAll("ha-form").forEach((form) => { form.hass = value; });
     if (!this.isConnected) return;
     if (!previous) {
@@ -154,9 +113,10 @@ class ListsView extends HTMLElement {
     const changed = Object.keys(value.states).some((id) => id.startsWith("todo.") && value.states[id] !== previous.states[id])
       || Object.keys(previous.states).some((id) => id.startsWith("todo.") && !value.states[id]);
     if (changed) this._refresh();
+    else if (previous.locale !== value.locale && !this._editor && !this._busy && !this.shadowRoot.activeElement) this._render();
   }
 
-  set narrow(value) { this._narrow = value; }
+  set narrow(value) { this._narrow = value; const menu = this.shadowRoot?.querySelector("ha-menu-button"); if (menu) menu.narrow = value; }
   setConfig(config) { this._config = config; }
   getCardSize() { return 6; }
 
@@ -212,7 +172,7 @@ class ListsView extends HTMLElement {
       const typing = this.shadowRoot.activeElement?.matches("ha-form,ha-input,ha-textfield");
       if (!this._editor && !this._busy && !typing) this._render();
     } catch (error) {
-      this._connectionError = error.message || "Unable to reach Home Assistant. Reconnect and try again.";
+      this._connectionError = error.message || this._t("unable_to_reach_home_assistant_reconnect_and_try_again");
       if (!this._editor) this._render();
     } finally {
       this._refreshing = false;
@@ -244,7 +204,7 @@ class ListsView extends HTMLElement {
     if (status) {
       status.hidden = false;
       status.setAttribute("alert-type", "info");
-      status.textContent = "Saving…";
+      status.textContent = this._t("saving");
     }
     this._setBusy(true);
     try {
@@ -256,9 +216,10 @@ class ListsView extends HTMLElement {
       while (this._refreshing) await new Promise((resolve) => setTimeout(resolve, 20));
       await this._refresh();
       this._render();
+      showToast(this, "Changes saved");
     } catch (error) {
       this._setBusy(false);
-      this._error = error.message || "The change could not be saved. Try again.";
+      this._error = error.message || this._t("the_change_could_not_be_saved_try_again");
       if (this._editor && status) {
         status.setAttribute("alert-type", "error");
         status.textContent = this._error;
@@ -293,11 +254,9 @@ class ListsView extends HTMLElement {
   _render() {
     const root = this.shadowRoot;
     const frame = el("div", undefined, this._config ? "compact" : "");
-    const header = el("header", undefined, "toolbar");
-    const menu = el("ha-menu-button");
-    menu.hass = this._hass;
-    menu.narrow = this._narrow;
-    header.append(menu, el("h1", "HA+ Lists"), iconButton("Refresh", "mdi:refresh", () => this._refresh(), this._busy));
+    const header = panelHeader("HA+ Lists", { hass: this._hass, narrow: this._narrow,
+      actions: [iconButton(this._t("common.refresh"), "mdi:refresh", () => this._refresh(), this._busy), ...(this._data?.admin ? [iconButton(this._t("integration_settings"), "mdi:cog", () => navigate(this, integrationUrl("lists_plus")))] : [])] });
+    header.classList.add("toolbar");
     frame.append(header);
     const main = el("main");
     const message = this._error || this._connectionError || this._uiError || "";
@@ -307,17 +266,17 @@ class ListsView extends HTMLElement {
     status.dataset.status = "";
     status.hidden = !message;
     main.append(status);
-    if (this._uiError) main.append(actionButton("Try again", () => this._loadComponents()));
+    if (this._uiError) main.append(actionButton(this._t("try_again"), () => this._loadComponents()));
     if (!this._componentsReady || !this._data) {
-      main.append(el("p", "Loading your lists…", "empty"));
+      main.append(el("p", this._t("loading_your_lists"), "empty"));
     } else {
       const lists = this._data.lists.filter((list) => !this._config?.entity || list.entity_id === this._config.entity);
       if (!lists.some((list) => list.id === this._selected)) this._selected = lists[0]?.id;
       if (!lists.length) {
         const empty = el("ha-card");
         const body = el("div", undefined, "empty");
-        body.append(el("h2", "No to-do lists"), el("p", "Create a list with Local to-do, or connect another to-do provider."));
-        const link = el("a", "Open integrations");
+        body.append(el("h2", this._t("no_to_do_lists")), el("p", this._t("create_a_list_with_local_to_do_or_connect_another_to_do_provider")));
+        const link = el("a", this._t("open_integrations"));
         link.href = "/config/integrations";
         body.append(link);
         empty.append(body);
@@ -330,7 +289,7 @@ class ListsView extends HTMLElement {
         }
         const layout = el("div", undefined, "layout");
         const nav = el("nav");
-        nav.setAttribute("aria-label", "To-do lists");
+        nav.setAttribute("aria-label", this._t("to_do_lists"));
         for (const group of [...new Set(lists.map((list) => list.metadata.group || "Ungrouped"))].sort()) {
           nav.append(el("h2", group));
           for (const list of lists.filter((list) => (list.metadata.group || "Ungrouped") === group)) {
@@ -341,8 +300,8 @@ class ListsView extends HTMLElement {
             choose.addEventListener("click", () => this._selectList(list.id));
             choose.append(icon("mdi:clipboard-list-outline"), el("span", list.name, "list-name"));
             const count = list.items.filter((item) => item.status !== "completed").length;
-            const countLabel = el("span", list.error ? "Unavailable" : String(count), "list-count");
-            countLabel.setAttribute("aria-label", list.error ? "Unavailable" : `${count} remaining`);
+            const countLabel = el("span", list.error ? this._t("unavailable") : formatNumber(this._hass, count), "list-count");
+            countLabel.setAttribute("aria-label", list.error ? this._t("unavailable") : `${count} remaining`);
             choose.append(countLabel);
             nav.append(choose);
           }
@@ -363,12 +322,12 @@ class ListsView extends HTMLElement {
     const card = el("ha-card");
     const heading = el("div", undefined, "card-header");
     heading.append(el("h2", list.name));
-    const filters = iconButton("Filter items", "mdi:filter-variant", () => {
+    const filters = iconButton(this._t("filter_items"), "mdi:filter-variant", () => {
       this._showFilters = !this._showFilters;
       this._render();
     });
     filters.selected = Boolean(this._showFilters);
-    const settings = iconButton("List settings", "mdi:dots-vertical", () => this._open({ type: "list", list }), !list.can_edit);
+    const settings = iconButton(this._t("list_settings"), "mdi:dots-vertical", () => this._open({ type: "list", list }), !list.can_edit);
     settings.dataset.focus = "settings";
     heading.append(filters, settings);
     card.append(heading);
@@ -376,7 +335,7 @@ class ListsView extends HTMLElement {
     this._annotations(annotations, list.metadata, list, "list");
     if (annotations.childNodes.length) card.append(annotations);
     if (list.error || !list.can_edit) {
-      const notice = el("ha-alert", list.error || "You have read-only access to this list.", "notice");
+      const notice = el("ha-alert", list.error || this._t("you_have_read_only_access_to_this_list"), "notice");
       notice.setAttribute("alert-type", list.error ? "warning" : "info");
       card.append(notice);
     }
@@ -384,10 +343,10 @@ class ListsView extends HTMLElement {
       const tagChoices = [...new Set(list.items.flatMap((item) => item.metadata.tags || []))]
         .sort().map((tag) => [`tag:${tag}`, tag]);
       const filterForm = nativeForm(this._hass, [
-        { name: "search", label: "Search items", selector: { text: {} } },
+        { name: "search", label: this._t("search_items"), selector: { text: {} } },
         { name: "", type: "grid", schema: [
-          selectField("tag", "Tag", options([["all", "All tags"], ...tagChoices])),
-          selectField("person", "Assigned to", options([["all", "Anyone"], ["unassigned", "Unassigned"], ...this._data.people.map((person) => [person.id, person.name])])),
+          selectField("tag", "Tag", options([["all", this._t("all_tags")], ...tagChoices])),
+          selectField("person", "Assigned to", options([["all", this._t("anyone")], ["unassigned", this._t("unassigned")], ...this._data.people.map((person) => [person.id, person.name])])),
         ] },
       ], {
         search: this._filter.search,
@@ -407,7 +366,7 @@ class ListsView extends HTMLElement {
     }
     if (feature(list, 1)) {
       const form = el("form", undefined, "add");
-      const input = textField("Add an item", this._newItem || "", (value) => { this._newItem = value; });
+      const input = textField(this._t("add_an_item"), this._newItem || "", (value) => { this._newItem = value; });
       input.maxLength = 1000;
       const add = () => {
         if (input.value?.trim()) this._run(list, "add_item", { summary: input.value.trim() });
@@ -422,7 +381,7 @@ class ListsView extends HTMLElement {
         event.preventDefault();
         add();
       });
-      form.append(input, iconButton("Add item", "mdi:plus", add));
+      form.append(input, iconButton(this._t("add_item"), "mdi:plus", add));
       card.append(form);
     }
     const items = el("div", undefined, "items");
@@ -442,11 +401,11 @@ class ListsView extends HTMLElement {
         && (!this._filter.tag || metadata.tags?.includes(this._filter.tag))
         && (!this._filter.person || (this._filter.person === "unassigned" ? !metadata.assignee : metadata.assignee === this._filter.person));
     });
-    if (!visible.length) container.append(el("p", list.items.length ? "No items match your filters." : "No items yet.", "empty"));
+    if (!visible.length) container.append(el("p", list.items.length ? this._t("no_items_match_your_filters") : this._t("no_items_yet"), "empty"));
     for (const completed of [false, true]) {
       const items = visible.filter((item) => (item.status === "completed") === completed);
       if (!items.length) continue;
-      container.append(el("h3", completed ? "Completed" : "To do", "section-title"));
+      container.append(el("h3", completed ? this._t("completed") : this._t("to_do"), "section-title"));
       for (const group of [...new Set(items.map((item) => item.metadata.group || ""))].sort()) {
         if (group) container.append(el("h4", group, "group-title"));
         for (const item of items.filter((item) => (item.metadata.group || "") === group)) container.append(this._item(list, item));
@@ -459,15 +418,15 @@ class ListsView extends HTMLElement {
     for (const tag of metadata.tags || []) details.append(el("span", tag, "tag"));
     if (metadata.assignee) {
       const person = el("span");
-      person.append(icon("mdi:account-outline"), el("span", this._data.people.find((item) => item.id === metadata.assignee)?.name || "Person unavailable"));
+      person.append(icon("mdi:account-outline"), el("span", this._data.people.find((item) => item.id === metadata.assignee)?.name || this._t("person_unavailable")));
       details.append(person);
     }
     for (const field of list.fields.filter((field) => field.scope === scope)) {
       const value = metadata.properties?.[field.id];
       if (value === undefined) continue;
       let display = String(value);
-      if (field.type === "area") display = this._data.areas.find((area) => area.id === value)?.name || "Area unavailable";
-      if (field.type === "boolean") display = value ? "Yes" : "No";
+      if (field.type === "area") display = this._data.areas.find((area) => area.id === value)?.name || this._t("area_unavailable");
+      if (field.type === "boolean") display = value ? this._t("yes") : this._t("no");
       details.append(el("span", `${field.name}: ${display}`));
     }
     if (details.childNodes.length) parent.append(details);
@@ -478,7 +437,7 @@ class ListsView extends HTMLElement {
     const check = el("ha-checkbox");
     check.checked = item.status === "completed";
     check.disabled = !feature(list, 4);
-    check.ariaLabel = `${check.checked ? "Reopen" : "Complete"} ${item.summary}`;
+    check.ariaLabel = `${check.checked ? this._t("reopen") : this._t("complete")} ${item.summary}`;
     check.addEventListener("change", () => this._run(list, "complete_item", { uid: item.uid, completed: check.checked }));
     const open = () => this._open({ type: "item", list, item }, item.uid);
     const body = el("div", undefined, "item-body");
@@ -488,9 +447,9 @@ class ListsView extends HTMLElement {
     name.addEventListener("click", open);
     body.append(name);
     this._annotations(body, item.metadata, list, "item");
-    if (item.due) body.append(el("div", `Due: ${item.due}`, "details"));
+    if (item.due) body.append(el("div", this._t("due", { value1: formatDateTime(this._hass, item.due, { timeStyle: undefined }) }), "details"));
     if (item.description) body.append(el("div", item.description, "details"));
-    const edit = iconButton(`Edit ${item.summary}`, "mdi:pencil", open, !list.can_edit || Boolean(list.error));
+    const edit = iconButton(this._t("edit", { value1: item.summary }), "mdi:pencil", open, !list.can_edit || Boolean(list.error));
     edit.dataset.focus = item.uid;
     row.append(check, body, edit);
     return row;
@@ -501,10 +460,7 @@ class ListsView extends HTMLElement {
     const list = editor.list;
     const dialog = el("ha-dialog", undefined, "dialog");
     const modern = "headerTitle" in dialog;
-    const title = {
-      item: "Item details", list: "List settings", field: "Add custom field",
-      confirm: "Confirm deletion", rename: "Rename item",
-    }[editor.type];
+    const title = this._t({ item: "item_details", list: "list_settings", field: "add_custom_field", confirm: "confirm_deletion", rename: "rename_item" }[editor.type]);
     dialog.heading = title;
     dialog.headerTitle = title;
     dialog.setAttribute("header-title", title);
@@ -530,7 +486,7 @@ class ListsView extends HTMLElement {
       let draft = metadataFormData(metadata, list, scope);
       if (scope === "item") {
         form.append(el("p", editor.item.summary));
-        if (feature(list, 4)) form.append(actionButton("Rename", () => this._open({ type: "rename", list, item: editor.item }, editor.item.uid)));
+        if (feature(list, 4)) form.append(actionButton(this._t("rename"), () => this._open({ type: "rename", list, item: editor.item }, editor.item.uid)));
       }
       const fields = nativeForm(this._hass, metadataSchema(list, scope, this._data.people), draft, (data) => { draft = data; });
       fields.setAttribute("autofocus", "");
@@ -540,38 +496,38 @@ class ListsView extends HTMLElement {
         this._run(list, scope === "item" ? "set_item" : "set_list", scope === "item" ? { uid: editor.item.uid, metadata: value } : value);
       };
       if (scope === "list") {
-        form.append(el("h3", "Custom fields"), el("p", "Add quantity, price, area or other fields to items or the list.", "muted"));
+        form.append(el("h3", this._t("custom_fields")), el("p", this._t("add_quantity_price_area_or_other_fields_to_items_or_the_list"), "muted"));
         for (const field of list.fields) {
           const row = el("div", undefined, "field-row");
           const description = el("div", undefined, "field-description");
           description.append(el("span", field.name), el("small", `${field.scope} · ${field.type}`));
           row.append(description);
-          if (this._data.admin) row.append(iconButton(`Delete ${field.name}`, "mdi:delete", () => this._open({
+          if (this._data.admin) row.append(iconButton(this._t("delete", { value1: field.name }), "mdi:delete", () => this._open({
             type: "confirm", list, action: "delete_field", payload: { id: field.id },
-            message: `Delete “${field.name}” and all its values from this list and its items?`,
+            message: this._t("delete_and_all_its_values_from_this_list_and_its_items", { value1: field.name }),
           })));
           form.append(row);
         }
-        if (this._data.admin) form.append(actionButton("Add custom field", () => this._open({ type: "field", list })));
-        form.append(el("p", "Save your changes before changing field definitions.", "muted"));
+        if (this._data.admin) form.append(actionButton(this._t("add_custom_field"), () => this._open({ type: "field", list })));
+        form.append(el("p", this._t("save_your_changes_before_changing_field_definitions"), "muted"));
       } else if (feature(list, 2)) {
-        form.append(actionButton("Delete item", () => this._open({
+        form.append(actionButton(this._t("delete_item"), () => this._open({
           type: "confirm", list, action: "delete_item", payload: { uid: editor.item.uid },
-          message: `Delete “${editor.item.summary}” from the original Home Assistant list?`,
+          message: this._t("delete_from_the_original_home_assistant_list", { value1: editor.item.summary }),
         }, editor.item.uid), false, "danger"));
       }
     } else if (editor.type === "field") {
       let draft = { id: "", name: "", type: "text", scope: "item" };
       form.append(nativeForm(this._hass, [
-        { name: "name", label: "Name", required: true, selector: { text: {} } },
-        { name: "id", label: "ID", helper: "Lowercase letters, numbers and underscores, such as quantity.", required: true, selector: { text: {} } },
-        selectField("type", "Type", options([["text", "Text"], ["number", "Number"], ["boolean", "Yes / No"], ["area", "Home Assistant area"]])),
-        selectField("scope", "Applies to", options([["item", "Each item"], ["list", "The list"]])),
+        { name: "name", label: this._t("name"), required: true, selector: { text: {} } },
+        { name: "id", label: this._t("id"), helper: this._t("lowercase_letters_numbers_and_underscores_such_as_quantity"), required: true, selector: { text: {} } },
+        selectField("type", this._t("type"), options([["text", this._t("text")], ["number", this._t("number")], ["boolean", this._t("yes_no")], ["area", this._t("home_assistant_area")]])),
+        selectField("scope", this._t("applies_to"), options([["item", this._t("each_item")], ["list", this._t("the_list")]])),
       ], draft, (data) => { draft = data; }));
       save = () => this._run(list, "add_field", draft);
     } else if (editor.type === "rename") {
       let draft = { summary: editor.item.summary };
-      form.append(nativeForm(this._hass, [{ name: "summary", label: "Item name", required: true, selector: { text: {} } }], draft, (data) => { draft = data; }));
+      form.append(nativeForm(this._hass, [{ name: "summary", label: this._t("item_name"), required: true, selector: { text: {} } }], draft, (data) => { draft = data; }));
       save = () => this._run(list, "rename_item", { uid: editor.item.uid, summary: draft.summary });
     } else {
       form.append(el("p", editor.message));
@@ -588,8 +544,8 @@ class ListsView extends HTMLElement {
     });
     body.append(form);
     dialog.append(body);
-    const cancel = actionButton("Cancel", () => this._close());
-    const confirm = actionButton(editor.type === "confirm" ? "Delete" : "Save", submit, this._busy, editor.type === "confirm" ? "danger" : "accent");
+    const cancel = actionButton(this._t("common.cancel"), () => this._close());
+    const confirm = actionButton(editor.type === "confirm" ? this._t("common.delete") : this._t("common.save"), submit, this._busy, editor.type === "confirm" ? "danger" : "accent");
     if (modern) {
       const footer = el("div", undefined, "dialog-footer");
       footer.slot = "footer";
@@ -607,4 +563,4 @@ class ListsView extends HTMLElement {
 customElements.define("lists-plus-panel", class extends ListsView {});
 customElements.define("lists-plus-card", class extends ListsView {});
 window.customCards = window.customCards || [];
-window.customCards.push({ type: "lists-plus-card", name: "HA+ Lists", description: "Existing to-do lists with groups, tags, fields and assignments" });
+window.customCards.push({ type: "lists-plus-card", name: "HA+ Lists", description: t("existing_to_do_lists_with_groups_tags_fields_and_assignments") });
