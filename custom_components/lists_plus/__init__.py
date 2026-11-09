@@ -9,6 +9,7 @@ from .manager import ListsManager
 async def async_setup_entry(hass, entry):
     manager = ListsManager(hass)
     await manager.store.async_load()
+    await manager.sync.async_load()
     hass.data[DOMAIN] = manager
     try:
         await async_register_frontend(hass)

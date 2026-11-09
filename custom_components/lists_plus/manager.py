@@ -8,6 +8,7 @@ from homeassistant.helpers import entity_registry as er
 from . import model
 from .const import EVENT
 from .storage import MetadataStore
+from .sync import SyncJournal, fingerprint
 
 ACTIONS = (
     "set_list",
@@ -25,6 +26,7 @@ class ListsManager:
     def __init__(self, hass):
         self.hass = hass
         self.store = MetadataStore(hass)
+        self.sync = SyncJournal(hass, self)
 
     async def user(self, context):
         if not context.user_id:
@@ -74,6 +76,8 @@ class ListsManager:
         user = await self.user(context)
         result = {
             "api_version": 1,
+            "sync_version": 1,
+            "user_id": context.user_id,
             "lists": [],
             "people": self.people(user),
             "areas": self.areas(),
@@ -107,6 +111,8 @@ class ListsManager:
                 ]
             except (HomeAssistantError, ValueError) as err:
                 data["error"] = str(err)
+            for item in data["items"]:
+                item["sync_etag"] = fingerprint(item)
             result["lists"].append(data)
         return result
 
