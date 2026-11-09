@@ -73,7 +73,7 @@ Metadata writes return the new `revision`. `revision` must match the current lis
 
 Field IDs: lowercase letters, numbers, underscores, starting with a letter; at most 60 characters. Types: `text`, finite `number`, `boolean`, or `area` (an existing HA area ID). Scope: `item` or `list`. Up to 30 fields per list and 30 tags per metadata record. Text field values are at most 2,000 characters. Schema changes do not silently coerce or discard data.
 
-This API is online-first. It does not yet implement deduplication keys, offline operation replay, a change log, or atomic transactions spanning native provider items and metadata. A future mobile sync protocol must add those guarantees before queuing arbitrary offline additions. One user operation never tries to pretend two separate stores can commit atomically.
+The original execute endpoint remains online-first. Offline clients use the optional ordered sync protocol below. Provider items and metadata remain separate transactions.
 
 ## Automation action
 
@@ -96,3 +96,18 @@ Metadata writes also accept `revision`; get it from an authenticated snapshot fi
 A failed metadata disk write does not publish the new in-memory record. An unavailable provider or missing item does not purge saved metadata. After a network error during native creation, inspect the original list before retrying: provider operations do not yet have idempotent replay guarantees.
 
 Integration unload removes the panel and action, but retains stored metadata. Reinstall and configure to restore it. Registry removal/recreation is deliberately not treated as a rename. Back up the original to-do provider and `.storage/lists_plus` together.
+
+
+## Ordered offline replay
+
+Snapshots retain `api_version: 1` and add `sync_version: 1`, the authenticated `user_id`, and an opaque `sync_etag` on each item. Clients must retain confirmed snapshots separately from saved drafts. Old clients and automation services keep their existing behavior.
+
+Send `lists_plus/sync` over the authenticated WebSocket with `client_id` (a stable random identifier per installation/account), `sequence` (starting at 1), stable registry `list_id`, `action`, and `payload`. Metadata actions also send the draft's `revision`. Rename, completion and deletion send the original item's `etag` from `sync_etag`. Resolve list registry IDs on each attempt so entity renames remain safe. Authorization is checked again on every mutation and receipt replay.
+
+Persist the immutable command before sending and send one sequence at a time. Repeat exactly the same command after a timeout. A durable per-user/client high-water mark returns the last receipt without invoking a provider again. Older sequences return `retired` and never execute. Changed commands at the same sequence and sequence gaps are rejected. Up to 64 client streams per user are retained without eviction.
+
+Receipts have `status` equal to `applied`, `conflict`, `uncertain`, `abandoned`, or `retired`, and may include `message`. A conflict preserves the draft for explicit review. Before any provider side effect, the journal durably records `uncertain`. A crash or failed receipt write leaves that outcome uncertain and blocks automatic replay. Providers can apply a write before raising an error, so provider errors also retain uncertainty. Native providers still control out-of-band concurrency and cannot participate in an atomic compare-and-swap transaction with HA+.
+
+Inspect an uncertain outcome before deciding whether to create a fresh operation. To abandon a blocked or undelivered command, resend that exact command with `abandon: true`, then wait for its receipt before advancing. Abandonment consumes its sequence without undoing provider changes and remains available after list removal or permission revocation. Explicit conflict retry must persist the abandonment and a new command together, using the current revision/etag only after user review.
+
+Back up `.storage/lists_plus_sync` with metadata and provider data. Deleting or restoring the journal independently can invalidate replay guarantees. Integration rollback leaves this separate additive store intact, but clients must suspend queue delivery while `sync_version` is absent.

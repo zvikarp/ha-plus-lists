@@ -81,9 +81,47 @@ async def command(hass, connection, msg):
         connection.send_result(msg["id"], result)
 
 
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "lists_plus/sync",
+        vol.Required("client_id"): vol.All(
+            str, vol.Length(min=1, max=64), vol.Match(r"^[a-zA-Z0-9_-]+$")
+        ),
+        vol.Required("sequence"): vol.All(int, vol.Range(min=1)),
+        vol.Required("list_id"): vol.All(str, vol.Length(min=1, max=64)),
+        vol.Required("action"): vol.In(ACTIONS),
+        vol.Required("payload"): dict,
+        vol.Optional("revision"): vol.All(int, vol.Range(min=0)),
+        vol.Optional("etag"): vol.All(str, vol.Length(max=64)),
+        vol.Optional("abandon", default=False): bool,
+    }
+)
+@websocket_api.async_response
+async def sync_command(hass, connection, msg):
+    manager = hass.data.get(DOMAIN)
+    if manager is None:
+        connection.send_error(msg["id"], "not_loaded", "HA+ Lists is not loaded")
+        return
+    try:
+        result = await manager.sync.execute(msg, connection.context(msg))
+    except Unauthorized:
+        connection.send_error(msg["id"], "unauthorized", "You cannot edit this list")
+    except OSError:
+        connection.send_error(
+            msg["id"],
+            "storage_error",
+            "Could not persist sync receipt. Retry this same operation.",
+        )
+    except (ValueError, HomeAssistantError) as err:
+        connection.send_error(msg["id"], "invalid_request", str(err))
+    else:
+        connection.send_result(msg["id"], result)
+
+
 def register_api(hass):
     websocket_api.async_register_command(hass, snapshot)
     websocket_api.async_register_command(hass, command)
+    websocket_api.async_register_command(hass, sync_command)
 
     async def service(call):
         return await execute(hass, call.data, call.context)
