@@ -3,14 +3,15 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node --test tests/frontend.test.js",
+    "test": "node --test tests/frontend.test.js tests/capture.test.js",
     "build": "ha-plus-frontend-vendor custom_components/lists_plus/ha_plus_frontend && esbuild src/lists-plus.js --bundle --format=iife --target=es2022 --legal-comments=inline --outfile=custom_components/lists_plus/frontend/lists-plus.js && ha-plus-ui-licenses custom_components/lists_plus/frontend",
     "check:build": "npm run build && git diff --exit-code -- custom_components"
   },
   "devDependencies": {
+    "@ha-plus/frontend": "https://github.com/zvikarp/ha-plus-packages/releases/download/frontend-v0.1.2/ha-plus-frontend-0.1.2.tgz",
     "@ha-plus/ui": "https://github.com/zvikarp/ha-plus-packages/releases/download/ui-v0.3.4/ha-plus-ui-0.3.4.tgz",
     "esbuild": "0.25.12",
-    "linkedom": "0.18.12",
-    "@ha-plus/frontend": "https://github.com/zvikarp/ha-plus-packages/releases/download/frontend-v0.1.2/ha-plus-frontend-0.1.2.tgz"
+    "fake-indexeddb": "6.2.8",
+    "linkedom": "0.18.12"
   }
 }

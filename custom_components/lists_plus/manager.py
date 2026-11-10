@@ -1,14 +1,20 @@
 """Bridge existing to-do services to a separately owned metadata store."""
 
+import logging
+
 from homeassistant.auth.permissions.const import POLICY_CONTROL, POLICY_READ
 from homeassistant.exceptions import HomeAssistantError, Unauthorized
 from homeassistant.helpers import area_registry as ar
 from homeassistant.helpers import entity_registry as er
 
 from . import model
+from .capture import CaptureHistory
 from .const import EVENT
+from .reminders import Reminders
 from .storage import MetadataStore
 from .sync import SyncJournal, fingerprint
+
+_LOGGER = logging.getLogger(__name__)
 
 ACTIONS = (
     "set_list",
@@ -27,6 +33,8 @@ class ListsManager:
         self.hass = hass
         self.store = MetadataStore(hass)
         self.sync = SyncJournal(hass, self)
+        self.capture = CaptureHistory(hass)
+        self.reminders = Reminders(hass, self)
 
     async def user(self, context):
         if not context.user_id:
@@ -77,6 +85,10 @@ class ListsManager:
         result = {
             "api_version": 1,
             "sync_version": 1,
+            "reminders_version": 1,
+            "reminder_options": self.reminders.options()
+            if user is None or user.is_admin
+            else {},
             "user_id": context.user_id,
             "lists": [],
             "people": self.people(user),
@@ -113,6 +125,16 @@ class ListsManager:
                 data["error"] = str(err)
             for item in data["items"]:
                 item["sync_etag"] = fingerprint(item)
+            data["suggestions"] = self.capture.suggestions(entry.id, data["items"])
+            data["reminders"] = (
+                [
+                    dict(rule)
+                    for rule in self.reminders.data.values()
+                    if rule["list_id"] == entry.id and not rule.get("deleted")
+                ]
+                if user is None or user.is_admin
+                else []
+            )
             result["lists"].append(data)
         return result
 
@@ -220,5 +242,16 @@ class ListsManager:
         await self.hass.services.async_call(
             "todo", service, data, blocking=True, context=context
         )
+        if action == "add_item":
+            try:
+                await self.capture.record(
+                    self.registry_entry(entity_id).id, data["item"]
+                )
+            except OSError as err:
+                # A suggestion-history failure must never invite a duplicate
+                # retry of an item that the provider has already created.
+                _LOGGER.warning(
+                    "Item added but capture history could not be saved: %s", err
+                )
         self.hass.bus.async_fire(EVENT)
         return {}

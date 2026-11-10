@@ -15,7 +15,7 @@ Groups, tags, custom fields and assignments for **your existing Home Assistant t
 - Use Home Assistant’s native forms, selectors, checkboxes and dialogs in a responsive sidebar panel or dashboard card.
 - Call authenticated Home Assistant WebSocket commands or actions from automations.
 
-The original to-do integration owns list items. HA+ Lists stores **only metadata** in Home Assistant's built-in storage. No external database, account, cloud service, or runtime frontend dependency is required.
+The original to-do integration owns list items. HA+ Lists stores metadata, reminder rules, and bounded capture history in Home Assistant's built-in storage. No external database, account, cloud service, or runtime frontend dependency is required.
 
 ## Install with HACS
 
@@ -82,3 +82,19 @@ Commit the generated integration frontend with its source. The pinned
 all styling and shared controls. Add reusable presentation to the package
 instead of app-local CSS or style writes. CI checks generated-file drift.
 HACS installations contain the complete bundle and require no browser CDN.
+
+## Home Assistant reminders and bulk capture
+
+Open **Reminders** on a list to manage due-item, recurring-chore, and shopping-on-zone-entry rules. Reminder setup requires a Home Assistant administrator with control access to the list. Choose Home Assistant persistent notifications or a registered `notify.mobile_app_*` target. Location rules use existing HA person and zone entities and notify on entry while items remain incomplete, at most once per hour. The integration retains location data in Home Assistant.
+
+Due reminders can repeat every 15, 30, 60, or 1440 minutes until the item is complete. Recurring chores reopen the same provider item on the next scheduled calendar-day occurrence. Completing the item suppresses reminders for the current occurrence. Scheduling resumes after HA restarts, using the latest overdue recurring occurrence. Recurrence preserves the configured Home Assistant local wall time. Setup displays dates in the device's time zone.
+
+Delivery claims are persisted before notification calls. An uncertain delivery is shown for review, and saving the edited rule enables a deliberate retry. Check existing notifications before retrying. Disabling or deleting a rule stops future deliveries. Deleted-list rules can still be removed from the authenticated API. Rules and delivery receipts are stored in HA's `lists_plus_reminders` storage.
+
+Use **Bulk capture** to paste a list or use browser dictation where available. System keyboard dictation also works. New lines, commas, and semicolons separate items. Quoted CSV-style names preserve punctuation. Review and edit the parsed names before saving. Likely duplicates, including close spelling matches, start unchecked and can be explicitly included. A capture accepts 1–100 items with up to 1000 Unicode scalar values per item.
+
+Reviewed batches are saved to account-scoped IndexedDB storage before sending ordered per-item sync commands. A lost connection can resume the same commands through **Resume saved capture**. Uncertain provider outcomes stop the queue for inspection and explicit abandonment before remaining items continue. A batch can span multiple acknowledged provider calls. Browsers need IndexedDB storage for this durable capture path. Atomic transactions prevent stale tabs from overwriting another capture and work on HTTP Home Assistant installations.
+
+Suggestions use a list-scoped history of successful additions, retaining counts and names even after an item is deleted. History is bounded to 200 names per list, with up to 12 suggestions returned to authorized list readers. This history uses the separate HA `lists_plus_capture` storage and survives integration reloads.
+
+The new reminder API is advertised by `reminders_version: 1` in snapshots. Existing clients can ignore the additional snapshot fields. Install the matching mobile update to manage these HA-owned rules from Flutter. Location delivery requires an already configured HA person tracker, and mobile push delivery requires a registered HA Companion notification service.
