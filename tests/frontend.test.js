@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import vm from "node:vm";
+import { IDBFactory } from "fake-indexeddb";
 import { parseHTML } from "linkedom";
 
 const tick = () => new Promise((resolve) => setImmediate(resolve));
@@ -54,6 +55,9 @@ async function setup(data = snapshot(), reject = false, tag = "lists-plus-panel"
   }
   const context = vm.createContext({
     window, document: window.document, HTMLElement: window.HTMLElement,
+    structuredClone, crypto: globalThis.crypto, indexedDB: new IDBFactory(),
+    navigator: { language: "en", locks: { request: async (_, callback) => callback() } },
+    localStorage: (() => { const data = new Map(); return { getItem:key=>data.get(key) ?? null, setItem:(key,value)=>data.set(key,value) }; })(),
     customElements: window.customElements, console, setTimeout, clearTimeout,
     setInterval: (...args) => { const timer = setInterval(...args); timer.unref(); return timer; },
     clearInterval,
@@ -64,6 +68,7 @@ async function setup(data = snapshot(), reject = false, tag = "lists-plus-panel"
     states: {},
     callWS: async (request) => {
       requests.push(JSON.parse(JSON.stringify(request)));
+      if (request.type === "lists_plus/sync") return { status: "applied" };
       if (request.type.endsWith("execute")) {
         if (reject) throw new Error("This list changed. Refresh before saving again.");
         return { revision: 4 };
@@ -345,4 +350,48 @@ test('create action sits below sidebar items and footer belongs to the content c
   const footer = panel.shadowRoot.querySelector('.ha-plus-collection-body footer');
   assert.equal(footer.querySelector('[data-version]').textContent, 'v0.1.5');
   assert.equal(footer.querySelectorAll('a').length, 2);
+});
+
+
+test("bulk capture reviews duplicate rows and saves selected immutable commands", async () => {
+  const data = snapshot(); data.user_id = "user"; data.sync_version = 1;
+  const {panel,requests,window} = await setup(data);
+  button(panel,"Bulk capture").click();
+  const input = panel.shadowRoot.querySelector("textarea"); input.value = "Milk; Rice; rice";
+  input.dispatchEvent(new window.Event("input"));
+  button(panel,"Review items").click();
+  const checks = [...panel.shadowRoot.querySelectorAll("input[type=checkbox]")];
+  assert.deepEqual(checks.map(value=>value.checked),[false,true,false]);
+  const names = panel.shadowRoot.querySelectorAll('input[aria-label="Item name"]');
+  names[1].value = "Tomatoes, chopped"; names[1].dispatchEvent(new window.Event("input"));
+  button(panel,"Save selected items").click();
+  for (let attempt=0; attempt<30 && !requests.some(request=>request.type==="lists_plus/sync"); attempt++) await tick();
+  await tick();
+  const saved = requests.filter(request=>request.type === "lists_plus/sync");
+  assert.equal(saved.length,1); assert.equal(saved[0].payload.summary,"Tomatoes, chopped");
+  panel.remove();
+});
+
+test("reminder setup exposes Home Assistant targets and blocks non-admin creation", async () => {
+  const data = snapshot(); data.reminders_version=1; data.admin=false;
+  data.reminder_options={notifications:["persistent_notification.create"],zones:[]};
+  const {panel} = await setup(data);
+  button(panel,"Reminders").click();
+  assert.match(panel.shadowRoot.querySelector("ha-dialog").textContent,/Reminder setup requires a Home Assistant administrator/);
+  assert.equal([...panel.shadowRoot.querySelectorAll("ha-button")].some(value=>value.textContent==="Add reminder"),false);
+  panel.remove();
+});
+
+
+test("reminder form saves an item UID and a timezone-aware schedule", async () => {
+  const data=snapshot(); data.reminders_version=1;
+  data.reminder_options={notifications:["persistent_notification.create"],zones:[]};
+  const {panel,requests}=await setup(data);
+  button(panel,"Reminders").click(); button(panel,"Add reminder").click();
+  button(panel,"Save").click(); await tick(); await tick();
+  const call=requests.find(value=>value.type==="lists_plus/reminder");
+  assert.equal(call.list_id,"stable-id"); assert.equal(call.rule.uid,"milk-1");
+  assert.equal(call.rule.kind,"due"); assert.equal(call.rule.notify_service,"persistent_notification.create");
+  assert.ok(call.rule.due.endsWith("Z")); assert.equal(call.revision,0);
+  panel.remove();
 });

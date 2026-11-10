@@ -11,7 +11,8 @@
     "http",
     "panel_custom",
     "websocket_api",
-    "todo"
+    "todo",
+    "persistent_notification"
   ],
   "documentation": "https://github.com/zvikarp/ha-plus-lists",
   "issue_tracker": "https://github.com/zvikarp/ha-plus-lists/issues",

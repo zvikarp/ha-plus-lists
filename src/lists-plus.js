@@ -1,6 +1,9 @@
+import { CaptureQueue, openCaptureStorage, operationId, captureInput, parseCapture, likelyDuplicate } from "./capture.js";
 import messages from "./translations/en.json";
+import hebrewMessages from "./translations/he.json";
+const translated = hass => (hass?.locale?.language || hass?.language || "").startsWith("he") ? { ...messages, ...hebrewMessages } : messages;
 import { localize, haContext } from "@ha-plus/ui";
-const t = (key, values) => localize(haContext(), messages, key, values);
+const t = (key, values) => localize(haContext(), translated(haContext()), key, values);
 
 import { collectionStyles, collectionCreateButton, appFooter, el, icon, actionButton, iconButton, nativeTextField as textField, nativeForm, loadNativeComponents, applyPreferences, formatDateTime, formatNumber, showToast, panelHeader } from "@ha-plus/ui";
 
@@ -89,7 +92,7 @@ function metadataFromForm(data, list, scope) {
 
 
 class ListsView extends HTMLElement {
-  _t(key, values) { return localize(this._hass, messages, key, values); }
+  _t(key, values) { return localize(this._hass, translated(this._hass), key, values); }
 
   constructor() {
     super();
@@ -153,6 +156,7 @@ class ListsView extends HTMLElement {
   }
 
   disconnectedCallback() {
+    this._speech?.abort(); this._speech = null;
     this._epoch++;
     clearInterval(this._timer);
     this._timer = null;
@@ -188,7 +192,7 @@ class ListsView extends HTMLElement {
 
   _setBusy(busy) {
     this._busy = busy;
-    for (const control of this.shadowRoot.querySelectorAll("ha-button,mwc-button,ha-icon-button,ha-form,ha-checkbox,ha-input,ha-textfield,button")) {
+    for (const control of this.shadowRoot.querySelectorAll("ha-button,mwc-button,ha-icon-button,ha-form,ha-checkbox,ha-input,ha-textfield,button,input,textarea,select")) {
       if (busy) {
         control._listsWasDisabled = control.disabled;
         control.disabled = true;
@@ -232,6 +236,52 @@ class ListsView extends HTMLElement {
         status.textContent = this._error;
       } else this._render();
     }
+  }
+
+  async _loadCapture(editor) {
+    let storage;
+    try {
+      storage = await openCaptureStorage();
+      const queue = await CaptureQueue.load(storage, this._data.user_id);
+      if (this._editor !== editor) return;
+      editor.pending = queue.data.pending;
+      this._render();
+    } catch (error) {
+      if (this._editor === editor) { this._error = error.message || this._t("capture_browser_lock"); this._render(); }
+    } finally { storage?.close(); }
+  }
+
+  async _captureSave(list, summaries, resume = false, abandon = false) {
+    if (this._busy) return;
+    this._setBusy(true);
+    try {
+      if (!this._data.user_id) throw new Error(this._t("capture_browser_lock"));
+      const storage = await openCaptureStorage();
+      try {
+        const queue = await CaptureQueue.load(storage, this._data.user_id);
+        if (abandon) await queue.abandon(request => this._hass.callWS(request));
+        if (!resume && !abandon) await queue.stage(list.id, summaries);
+        await queue.flush(request => this._hass.callWS(request));
+      } finally { storage.close(); }
+      this._editor = null; this._error = ""; this._busy = false;
+      await this._refresh(); this._render();
+      showToast(this, this._t("capture_saved"));
+    } catch (error) {
+      this._error = error.message || this._t("capture_retry"); this._busy = false;
+      this._render();
+      if (this._editor?.type === "capture") this._loadCapture(this._editor);
+    }
+  }
+
+  async _reminderSave(list, rule, existing) {
+    if (this._busy) return;
+    this._setBusy(true);
+    try {
+      await this._hass.callWS({ type: "lists_plus/reminder", list_id: list.id,
+        rule_id: existing?.id || operationId(), revision: existing?.revision || 0, rule });
+      this._editor = null; this._error = ""; this._busy = false;
+      await this._refresh(); this._render();
+    } catch (error) { this._busy = false; this._error = error.message; this._render(); }
   }
 
   async _createList(name) {
@@ -283,10 +333,12 @@ class ListsView extends HTMLElement {
     this._returnFocus = returnFocus;
     this._error = "";
     this._render();
+    if (editor.type === "capture") this._loadCapture(editor);
   }
 
   _close() {
     if (this._busy) return;
+    this._speech?.abort(); this._speech = null;
     this._editor = null;
     this._error = "";
     this._render();
@@ -458,9 +510,11 @@ class ListsView extends HTMLElement {
         event.preventDefault();
         add();
       });
-      form.append(input, iconButton(this._t("add_item"), "mdi:plus", add));
+      form.append(input, iconButton(this._t("add_item"), "mdi:plus", add),
+        iconButton(this._t("bulk_capture"), "mdi:playlist-plus", () => this._open({ type: "capture", list, raw: this._newItem || "" })));
       card.append(form);
     }
+    if (this._data.reminders_version === 1) card.append(actionButton(this._t("reminders"), () => this._open({ type: "reminders", list })));
     const items = el("div", undefined, "items");
     card.append(items);
     content.append(card);
@@ -537,7 +591,7 @@ class ListsView extends HTMLElement {
     const list = editor.list;
     const dialog = el("ha-dialog", undefined, "dialog");
     const modern = "headerTitle" in dialog;
-    const title = this._t({ item: "item_details", list: "list_settings", field: "add_custom_field", confirm: "confirm_deletion", rename: "rename_item", create_list: "create_list" }[editor.type]);
+    const title = this._t({ capture: "bulk_capture", reminders: "reminders", reminder: "reminders", item: "item_details", list: "list_settings", field: "add_custom_field", confirm: "confirm_deletion", rename: "rename_item", create_list: "create_list" }[editor.type]);
     dialog.heading = title;
     dialog.headerTitle = title;
     dialog.setAttribute("header-title", title);
@@ -549,6 +603,7 @@ class ListsView extends HTMLElement {
       if (this._busy) event.preventDefault();
     });
     const body = el("div", undefined, "dialog-content");
+    body.style.cssText = "display:block;max-width:100%;overflow-wrap:anywhere";
     const status = el("ha-alert", this._error || "");
     status.setAttribute("alert-type", "error");
     status.setAttribute("role", "status");
@@ -557,7 +612,118 @@ class ListsView extends HTMLElement {
     body.append(status);
     const form = el("form");
     let save;
-    if (editor.type === "create_list") {
+    if (editor.type === "capture") {
+      form.append(el("p", this._t("capture_hint")));
+      const input = el("textarea"); input.value = editor.raw || ""; input.rows = 5; input.style.cssText = "box-sizing:border-box;width:100%;font:inherit;color:inherit;background:var(--card-background-color);border:1px solid var(--divider-color);padding:12px";
+      input.setAttribute("aria-label", this._t("bulk_capture"));
+      input.addEventListener("input", () => { editor.raw = input.value; editor.entries = null; });
+      form.append(input);
+      const suggestions = el("div");
+      for (const value of list.suggestions || []) suggestions.append(actionButton(value.summary, () => {
+        editor.raw = `${input.value.trim()}${input.value.trim() ? "\n" : ""}${captureInput(value.summary)}`; editor.entries = null; this._render();
+      }));
+      form.append(suggestions);
+      const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+      if (Recognition) form.append(actionButton(this._t("dictate_items"), () => {
+        this._speech?.abort();
+        const speech = new Recognition(); this._speech = speech; speech.lang = this._hass.locale?.language || navigator.language;
+        speech.onresult = event => { if (this._editor !== editor) return; editor.raw = `${input.value.trim()}${input.value.trim() ? "\n" : ""}${event.results[0][0].transcript}`; editor.entries = null; this._render(); };
+        speech.onerror = () => { this._error = this._t("dictation_unavailable"); this._render(); };
+        try { speech.start(); } catch (_) { this._error = this._t("dictation_unavailable"); this._render(); }
+      }));
+      if (editor.entries) {
+        form.append(el("p", this._t("capture_review")));
+        editor.entries.forEach((entry, index) => {
+          const row = el("div"); const check = el("input"); check.setAttribute("aria-label", entry.summary); check.type = "checkbox"; check.checked = entry.selected;
+          check.addEventListener("change", () => { editor.entries[index].selected = check.checked; });
+          const name = el("input"); name.value = entry.summary; name.required = true; name.maxLength = 2000; name.setAttribute("aria-label", this._t("item_name"));
+          name.addEventListener("input", () => { entry.summary = name.value; });
+          row.append(check, name);
+          if (entry.duplicate) row.append(el("span", this._t("likely_duplicate")));
+          form.append(row);
+        });
+      }
+      if (editor.pending?.length) {
+        for (const operation of editor.pending) {
+          const name = this._data.lists.find(value => value.id === operation.list_id)?.name || operation.list_id;
+          form.append(el("p", `${name} · ${operation.payload.summary}${operation.status ? ` · ${operation.status}` : ""}`));
+        }
+        form.append(el("p", this._t("capture_retry")), actionButton(this._t("resume_capture"), () => this._captureSave(list, [], true)));
+        if (editor.pending[0].status) form.append(actionButton(this._t("abandon_capture_item"), () => {
+          if (window.confirm(this._t("capture_abandon_confirm"))) this._captureSave(list, [], true, true);
+        }));
+      }
+      save = () => {
+        if (!editor.entries) {
+          const values = parseCapture(input.value);
+          if (!values.length || values.length > 100 || values.some(value => [...value].length > 1000)) { this._error = this._t("capture_limit"); this._render(); return; }
+          editor.raw = input.value;
+          editor.entries = values.map((summary, index) => {
+            const duplicate = list.items.some(item => item.status !== "completed" && likelyDuplicate(summary, item.summary)) || values.slice(0,index).some(value => likelyDuplicate(summary,value));
+            return { summary, duplicate, selected: !duplicate };
+          });
+          this._render(); return;
+        }
+        const selected = editor.entries.filter(entry => entry.selected).map(entry => entry.summary);
+        if (!selected.length) { this._error = this._t("capture_select"); this._render(); return; }
+        this._captureSave(list, selected);
+      };
+    } else if (editor.type === "reminders") {
+      form.append(el("p", this._t("reminder_owned")));
+      if (!this._data.admin) form.append(el("p", this._t("reminder_admin")));
+      for (const rule of list.reminders || []) {
+        const item = list.items.find(item => item.uid === rule.uid);
+        form.append(actionButton(`${this._t(`reminder_${rule.kind}`)} · ${item?.summary || rule.zone_id || ""} · ${rule.due ? formatDateTime(this._hass, rule.due) : ""}`, () => this._open({ type: "reminder", list, rule }), !this._data.admin));
+        if (rule.error) form.append(el("p", `${this._t("reminder_delivery_review")} ${rule.error}`));
+      }
+      if (this._data.admin) form.append(actionButton(this._t("add_reminder"), () => this._open({ type: "reminder", list })));
+      save = () => this._close();
+    } else if (editor.type === "reminder") {
+      const existing = editor.rule;
+      editor.ruleId ||= existing?.id || operationId();
+      const draft = editor.draft ||= { kind: existing?.kind || "due", uid: existing?.uid || list.items[0]?.uid,
+        due: existing?.due || new Date(Date.now() + 3600000).toISOString(),
+        interval_days: existing?.interval_days || 1, repeat_minutes: existing?.repeat_minutes || 0,
+        person_id: existing?.person_id, zone_id: existing?.zone_id,
+        notify_service: existing?.notify_service || "persistent_notification.create", enabled: existing?.enabled ?? true };
+      form.append(el("p", this._t("reminder_owned")));
+      const picker = (label, value, choices, change) => {
+        const wrapper = el("label", label); const select = el("select"); select.setAttribute("aria-label", label);
+        const placeholder = el("option", this._t("choose_value")); placeholder.value = ""; select.append(placeholder);
+        for (const [id,name] of choices) { const option = el("option", name); option.value = id; option.selected = id === value; select.append(option); }
+        select.required = true;
+        select.addEventListener("change", () => change(select.value)); wrapper.append(select); form.append(wrapper);
+      };
+      picker(this._t("reminder_type"), draft.kind, ["due","recurring","location"].map(kind => [kind,this._t(`reminder_${kind}`)]), value => { draft.kind = value; this._render(); });
+      if (draft.kind === "location") {
+        picker(this._t("person"), draft.person_id, this._data.people.map(value => [value.id,value.name]), value => { draft.person_id = value; });
+        picker(this._t("zone"), draft.zone_id, (this._data.reminder_options?.zones || []).map(value => [value.id,value.name]), value => { draft.zone_id = value; });
+        form.append(el("p", this._t("reminder_location_help")));
+      } else {
+        picker(this._t("item_name"), draft.uid, list.items.map(value => [value.uid,`${value.summary} · ${value.uid}`]), value => { draft.uid = value; });
+        const date = el("input"); date.type = "datetime-local"; date.required = true;
+        const local = new Date(draft.due); date.value = new Date(local.getTime() - local.getTimezoneOffset() * 60000).toISOString().slice(0,16);
+        date.setAttribute("aria-label", this._t("reminder_date"));
+        date.addEventListener("change", () => { if (date.value) draft.due = new Date(date.value).toISOString(); }); form.append(date);
+        form.append(el("p", this._t("reminder_timezone")));
+        if (draft.kind === "recurring") {
+          const interval = el("input"); interval.type = "number"; interval.min = 1; interval.max = 365; interval.required = true; interval.value = draft.interval_days;
+          interval.setAttribute("aria-label", this._t("recurrence_days")); interval.addEventListener("input", () => { draft.interval_days = Number(interval.value); }); form.append(el("label", this._t("recurrence_days")), interval, el("p", this._t("recurring_help")));
+        }
+        picker(this._t("repeat_until_complete"), String(draft.repeat_minutes), [0,15,30,60,1440].map(value => [String(value), value ? `${value} min` : this._t("reminder_once")]), value => { draft.repeat_minutes = Number(value); });
+      }
+      picker(this._t("notification_target"), draft.notify_service, (this._data.reminder_options?.notifications || []).map(value => [value,value]), value => { draft.notify_service = value; });
+      const enabled = el("input"); enabled.type = "checkbox"; enabled.checked = draft.enabled;
+      enabled.addEventListener("change", () => { draft.enabled = enabled.checked; }); const enabledLabel = el("label", this._t("reminder_enabled")); enabledLabel.append(enabled); form.append(enabledLabel);
+      if (existing) form.append(actionButton(this._t("delete_reminder"), () => { if (window.confirm(this._t("delete_reminder"))) this._reminderSave(list, null, existing); }));
+      save = () => {
+        if (form.reportValidity && !form.reportValidity()) return;
+        const rule = { kind: draft.kind, enabled: draft.enabled, notify_service: draft.notify_service };
+        if (draft.kind === "location") Object.assign(rule, {person_id: draft.person_id, zone_id: draft.zone_id});
+        else Object.assign(rule, {uid: draft.uid, due: draft.due, repeat_minutes: draft.repeat_minutes, ...(draft.kind === "recurring" ? {interval_days: draft.interval_days} : {})});
+        this._reminderSave(list, rule, {id: editor.ruleId, revision: existing?.revision || 0});
+      };
+    } else if (editor.type === "create_list") {
       let name = editor.name || "";
       form.append(el("p", this._t("create_list_description")));
       form.append(nativeForm(this._hass, [{ name: "name", label: this._t("list_name"), required: true, selector: { text: {} } }], { name }, data => { editor.name = name = data.name; }));
@@ -617,6 +783,7 @@ class ListsView extends HTMLElement {
     }
     const submit = () => {
       if (this._busy) return;
+      if (form.reportValidity && !form.reportValidity()) return;
       const invalid = [...form.querySelectorAll("ha-form")].some((fields) => fields.reportValidity && !fields.reportValidity());
       if (!invalid) save();
     };
@@ -627,7 +794,7 @@ class ListsView extends HTMLElement {
     body.append(form);
     dialog.append(body);
     const cancel = actionButton(this._t("common.cancel"), () => this._close());
-    const confirm = actionButton(editor.type === "confirm" ? this._t("common.delete") : editor.type === "create_list" ? this._t("create_list") : this._t("common.save"), submit, this._busy, editor.type === "confirm" ? "danger" : "accent");
+    const confirm = actionButton(editor.type === "capture" ? this._t(editor.entries ? "capture_save" : "capture_review_button") : editor.type === "reminders" ? this._t("common.close") : editor.type === "confirm" ? this._t("common.delete") : editor.type === "create_list" ? this._t("create_list") : this._t("common.save"), submit, this._busy, editor.type === "confirm" ? "danger" : "accent");
     if (modern) {
       const footer = el("div", undefined, "dialog-footer");
       footer.slot = "footer";

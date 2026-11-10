@@ -118,7 +118,45 @@ async def sync_command(hass, connection, msg):
         connection.send_result(msg["id"], result)
 
 
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "lists_plus/reminder",
+        vol.Required("list_id"): vol.All(str, vol.Length(min=1, max=64)),
+        vol.Required("rule_id"): vol.All(str, vol.Length(min=1, max=64)),
+        vol.Required("revision"): vol.All(int, vol.Range(min=0)),
+        vol.Required("rule"): vol.Any(dict, None),
+    }
+)
+@websocket_api.async_response
+async def reminder_command(hass, connection, msg):
+    manager = hass.data.get(DOMAIN)
+    if manager is None:
+        connection.send_error(msg["id"], "not_loaded", "HA+ Lists is not loaded")
+        return
+    try:
+        result = await manager.reminders.configure(
+            msg["list_id"],
+            msg["rule_id"],
+            msg["revision"],
+            msg.get("rule"),
+            connection.context(msg),
+        )
+    except Unauthorized:
+        connection.send_error(
+            msg["id"],
+            "unauthorized",
+            "Reminder setup requires a Home Assistant administrator",
+        )
+    except Conflict as err:
+        connection.send_error(msg["id"], "conflict", str(err))
+    except (ValueError, OSError, HomeAssistantError) as err:
+        connection.send_error(msg["id"], "invalid_request", str(err))
+    else:
+        connection.send_result(msg["id"], result)
+
+
 def register_api(hass):
+    websocket_api.async_register_command(hass, reminder_command)
     websocket_api.async_register_command(hass, snapshot)
     websocket_api.async_register_command(hass, command)
     websocket_api.async_register_command(hass, sync_command)

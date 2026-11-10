@@ -1,4 +1,136 @@
 (() => {
+  // src/capture.js
+  function captureInput(summary) {
+    return /[\n\r,;"]/u.test(summary) || /^(?:[-*•]\s+|\d+[.)]\s+)/u.test(summary) ? `"${summary.replaceAll('"', '""')}"` : summary;
+  }
+  function parseCapture(text) {
+    const values = [];
+    let buffer = "", quoted = false, fieldQuoted = false;
+    const add = () => {
+      let value = buffer.trim();
+      if (!fieldQuoted) value = value.replace(/^(?:[-*•]\s+|\d+[.)]\s+)(?:\[[ xX]\]\s*)?/u, "").trim();
+      if (value) values.push(value);
+      buffer = "";
+      fieldQuoted = false;
+    };
+    for (let index = 0; index < text.length; index++) {
+      const char = text[index];
+      if (char === '"' && quoted) {
+        if (text[index + 1] === '"') {
+          buffer += '"';
+          index++;
+        } else quoted = false;
+      } else if (char === '"' && !buffer.trim()) {
+        quoted = true;
+        fieldQuoted = true;
+      } else if (!quoted && "\n\r,;".includes(char)) add();
+      else buffer += char;
+    }
+    if (quoted) buffer = `"${buffer}`;
+    add();
+    return values;
+  }
+  var key = (value) => value.toLowerCase().trim().replace(/\s+/gu, " ");
+  function likelyDuplicate(first, second) {
+    const a = [...key(first)], b = [...key(second)];
+    if (a.join("") === b.join("")) return true;
+    if (a.length < 5 || b.length < 5 || Math.abs(a.length - b.length) > 1) return false;
+    let i = 0, j = 0, edits = 0;
+    while (i < a.length && j < b.length) {
+      if (a[i] === b[j]) {
+        i++;
+        j++;
+        continue;
+      }
+      if (++edits > 1) return false;
+      if (a.length >= b.length) i++;
+      if (b.length >= a.length) j++;
+    }
+    return edits + a.length - i + b.length - j <= 1;
+  }
+  async function openCaptureStorage() {
+    const database = await new Promise((resolve, reject) => {
+      const request = indexedDB.open("ha-plus-lists-capture", 1);
+      request.onupgradeneeded = () => request.result.createObjectStore("queues");
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    return {
+      close: () => database.close(),
+      read: (key2) => new Promise((resolve, reject) => {
+        const request = database.transaction("queues").objectStore("queues").get(key2);
+        request.onsuccess = () => resolve(request.result ?? null);
+        request.onerror = () => reject(request.error);
+      }),
+      compareAndSet: (key2, expected, value) => new Promise((resolve, reject) => {
+        const transaction = database.transaction("queues", "readwrite");
+        const store = transaction.objectStore("queues");
+        const request = store.get(key2);
+        let conflict = false;
+        request.onsuccess = () => {
+          if ((request.result ?? null) !== expected) {
+            conflict = true;
+            transaction.abort();
+          } else store.put(value, key2);
+        };
+        transaction.oncomplete = () => resolve();
+        transaction.onabort = () => reject(conflict ? new Error("Another capture changed. Resume the saved capture before retrying.") : transaction.error);
+        transaction.onerror = () => reject(transaction.error);
+      })
+    };
+  }
+  function operationId() {
+    return Array.from(crypto.getRandomValues(new Uint8Array(16)), (value) => value.toString(16).padStart(2, "0")).join("");
+  }
+  var CaptureQueue = class _CaptureQueue {
+    static async load(storage, account) {
+      const key2 = `ha-plus-capture-${account}`;
+      return new _CaptureQueue(storage, key2, await storage.read(key2));
+    }
+    constructor(storage, key2, saved) {
+      this.storage = storage;
+      this.key = key2;
+      this.saved = saved;
+      this.data = saved ? JSON.parse(saved) : { client: `capture_${operationId()}`, sequence: 0, pending: [] };
+      if (!this.data.client || !Number.isInteger(this.data.sequence) || !Array.isArray(this.data.pending)) throw new Error("Saved capture data needs recovery");
+    }
+    async persist(data) {
+      const value = JSON.stringify(data);
+      await this.storage.compareAndSet(this.key, this.saved, value);
+      this.saved = value;
+      this.data = data;
+    }
+    async stage(listId, summaries) {
+      if (this.data.pending.length) throw new Error("Review or resume the saved capture first");
+      if (!summaries.length || summaries.length > 100 || summaries.some((value) => !value.trim() || [...value].length > 1e3)) throw new Error("Review 1\u2013100 items, with 1\u20131000 characters per item.");
+      const data = structuredClone(this.data);
+      for (const summary of summaries) data.pending.push({ client_id: data.client, sequence: ++data.sequence, list_id: listId, action: "add_item", payload: { summary: summary.trim() } });
+      await this.persist(data);
+    }
+    async flush(send) {
+      while (this.data.pending.length) {
+        const operation = this.data.pending[0];
+        if (operation.status) throw new Error("Review the uncertain item before continuing");
+        const result = await send({ ...operation, type: "lists_plus/sync" });
+        const data = structuredClone(this.data);
+        if (["applied", "abandoned", "retired"].includes(result.status)) data.pending.shift();
+        else if (["conflict", "uncertain"].includes(result.status)) data.pending[0].status = result.status;
+        else throw new Error("Unexpected capture receipt. Retry the saved capture.");
+        await this.persist(data);
+      }
+    }
+    async abandon(send) {
+      const operation = this.data.pending[0];
+      if (!operation) return;
+      const { status, ...request } = operation;
+      const result = await send({ ...request, type: "lists_plus/sync", abandon: true });
+      if (!["applied", "abandoned", "retired"].includes(result.status)) throw new Error("The saved item still needs review");
+      const data = structuredClone(this.data);
+      data.pending.shift();
+      await this.persist(data);
+    }
+  };
+
   // src/translations/en.json
   var en_default = {
     list_group: "List group",
@@ -74,7 +206,87 @@
     list_already_exists: "A local list with this name already exists.",
     list_creation_failed: "The list could not be created. Try again.",
     list_created: "List created",
-    create_new_list: "Create New List"
+    create_new_list: "Create New List",
+    bulk_capture: "Bulk capture",
+    capture_hint: "Paste or dictate items separated by new lines, commas, or semicolons. You can edit each item during review.",
+    capture_review: "Review items. Likely duplicates start unchecked.",
+    capture_review_button: "Review items",
+    capture_save: "Save selected items",
+    capture_limit: "Review 1\u2013100 items, with 1\u20131000 characters per item.",
+    capture_select: "Select at least one item.",
+    likely_duplicate: "Likely duplicate",
+    capture_saved: "Items saved",
+    capture_retry: "Saved capture is waiting. Resume to retry safely. If an item needs review, inspect the list before abandoning its receipt and continuing.",
+    capture_browser_lock: "Enable browser storage to save and resume bulk captures.",
+    resume_capture: "Resume saved capture",
+    abandon_capture_item: "Abandon reviewed item and continue",
+    capture_abandon_confirm: "Check whether this item already exists in the list. Abandoning its receipt keeps any provider change and continues with the remaining items.",
+    dictate_items: "Dictate items",
+    dictation_unavailable: "Dictation is unavailable. Use keyboard dictation or paste your items.",
+    reminders: "Reminders",
+    reminder_owned: "Home Assistant schedules and delivers reminders. Completing an item stops reminders for its current occurrence.",
+    reminder_admin: "Reminder setup requires a Home Assistant administrator.",
+    add_reminder: "Add reminder",
+    delete_reminder: "Delete reminder?",
+    reminder_type: "Reminder type",
+    reminder_due: "Due item",
+    reminder_recurring: "Recurring chore",
+    reminder_location: "Shopping on zone entry",
+    person: "Person",
+    zone: "Zone",
+    choose_value: "Choose a value",
+    reminder_date: "Reminder date and time",
+    recurrence_days: "Repeat every number of days (1\u2013365)",
+    recurring_help: "Home Assistant reopens the item at the next occurrence.",
+    repeat_until_complete: "Remind again until complete",
+    reminder_once: "Once per occurrence",
+    notification_target: "Deliver notification to",
+    reminder_enabled: "Enabled",
+    reminder_timezone: "Times use this device\u2019s time zone. Recurring chores preserve the Home Assistant local wall time.",
+    reminder_location_help: "Uses the selected HA person\u2019s zone entry. Notify at most once an hour while items remain incomplete.",
+    reminder_delivery_review: "Delivery needs review. Edit and save to retry."
+  };
+
+  // src/translations/he.json
+  var he_default = {
+    bulk_capture: "\u05D4\u05D5\u05E1\u05E4\u05D4 \u05DE\u05E8\u05D5\u05DB\u05D6\u05EA",
+    capture_hint: "\u05D4\u05D3\u05D1\u05D9\u05E7\u05D5 \u05D0\u05D5 \u05D4\u05DB\u05EA\u05D9\u05D1\u05D5 \u05E4\u05E8\u05D9\u05D8\u05D9\u05DD \u05DE\u05D5\u05E4\u05E8\u05D3\u05D9\u05DD \u05D1\u05E9\u05D5\u05E8\u05D5\u05EA, \u05E4\u05E1\u05D9\u05E7\u05D9\u05DD \u05D0\u05D5 \u05E0\u05E7\u05D5\u05D3\u05D4\u05BE\u05E4\u05E1\u05D9\u05E7. \u05E0\u05D9\u05EA\u05DF \u05DC\u05E2\u05E8\u05D5\u05DA \u05DB\u05DC \u05E4\u05E8\u05D9\u05D8 \u05D1\u05D1\u05D3\u05D9\u05E7\u05D4.",
+    capture_review: "\u05D1\u05D3\u05E7\u05D5 \u05D0\u05EA \u05D4\u05E4\u05E8\u05D9\u05D8\u05D9\u05DD. \u05DB\u05E4\u05D9\u05DC\u05D5\u05D9\u05D5\u05EA \u05D0\u05E4\u05E9\u05E8\u05D9\u05D5\u05EA \u05D0\u05D9\u05E0\u05DF \u05DE\u05E1\u05D5\u05DE\u05E0\u05D5\u05EA.",
+    capture_review_button: "\u05D1\u05D3\u05D9\u05E7\u05EA \u05E4\u05E8\u05D9\u05D8\u05D9\u05DD",
+    capture_save: "\u05E9\u05DE\u05D9\u05E8\u05EA \u05D4\u05E4\u05E8\u05D9\u05D8\u05D9\u05DD \u05E9\u05E0\u05D1\u05D7\u05E8\u05D5",
+    capture_limit: "\u05D9\u05E9 \u05DC\u05D1\u05D3\u05D5\u05E7 1\u2013100 \u05E4\u05E8\u05D9\u05D8\u05D9\u05DD, \u05E2\u05DD 1\u20131000 \u05EA\u05D5\u05D5\u05D9\u05DD \u05DC\u05E4\u05E8\u05D9\u05D8.",
+    capture_select: "\u05D9\u05E9 \u05DC\u05D1\u05D7\u05D5\u05E8 \u05DC\u05E4\u05D7\u05D5\u05EA \u05E4\u05E8\u05D9\u05D8 \u05D0\u05D7\u05D3.",
+    likely_duplicate: "\u05DB\u05E4\u05D9\u05DC\u05D5\u05EA \u05D0\u05E4\u05E9\u05E8\u05D9\u05EA",
+    capture_saved: "\u05D4\u05E4\u05E8\u05D9\u05D8\u05D9\u05DD \u05E0\u05E9\u05DE\u05E8\u05D5",
+    capture_retry: "\u05D4\u05D4\u05D5\u05E1\u05E4\u05D4 \u05D4\u05E9\u05DE\u05D5\u05E8\u05D4 \u05DE\u05DE\u05EA\u05D9\u05E0\u05D4. \u05D4\u05DE\u05E9\u05D9\u05DB\u05D5 \u05DB\u05D3\u05D9 \u05DC\u05E0\u05E1\u05D5\u05EA \u05E9\u05D5\u05D1 \u05D1\u05D1\u05D8\u05D7\u05D4. \u05D0\u05DD \u05E4\u05E8\u05D9\u05D8 \u05D3\u05D5\u05E8\u05E9 \u05D1\u05D3\u05D9\u05E7\u05D4, \u05D1\u05D3\u05E7\u05D5 \u05D0\u05EA \u05D4\u05E8\u05E9\u05D9\u05DE\u05D4 \u05DC\u05E4\u05E0\u05D9 \u05D5\u05D9\u05EA\u05D5\u05E8 \u05E2\u05DC \u05D4\u05D0\u05D9\u05E9\u05D5\u05E8 \u05D5\u05D4\u05DE\u05E9\u05DA.",
+    capture_browser_lock: "\u05D9\u05E9 \u05DC\u05D0\u05E4\u05E9\u05E8 \u05D0\u05D7\u05E1\u05D5\u05DF \u05D1\u05D3\u05E4\u05D3\u05E4\u05DF \u05DB\u05D3\u05D9 \u05DC\u05E9\u05DE\u05D5\u05E8 \u05D5\u05DC\u05D4\u05DE\u05E9\u05D9\u05DA \u05D4\u05D5\u05E1\u05E4\u05D4 \u05DE\u05E8\u05D5\u05DB\u05D6\u05EA.",
+    resume_capture: "\u05D4\u05DE\u05E9\u05DA \u05D4\u05D5\u05E1\u05E4\u05D4 \u05E9\u05DE\u05D5\u05E8\u05D4",
+    abandon_capture_item: "\u05D5\u05D9\u05EA\u05D5\u05E8 \u05E2\u05DC \u05D4\u05E4\u05E8\u05D9\u05D8 \u05E9\u05E0\u05D1\u05D3\u05E7 \u05D5\u05D4\u05DE\u05E9\u05DA",
+    capture_abandon_confirm: "\u05D1\u05D3\u05E7\u05D5 \u05D0\u05DD \u05D4\u05E4\u05E8\u05D9\u05D8 \u05DB\u05D1\u05E8 \u05E7\u05D9\u05D9\u05DD \u05D1\u05E8\u05E9\u05D9\u05DE\u05D4. \u05D5\u05D9\u05EA\u05D5\u05E8 \u05E2\u05DC \u05D4\u05D0\u05D9\u05E9\u05D5\u05E8 \u05E9\u05D5\u05DE\u05E8 \u05E9\u05D9\u05E0\u05D5\u05D9 \u05E9\u05DB\u05D1\u05E8 \u05D1\u05D5\u05E6\u05E2 \u05D5\u05DE\u05DE\u05E9\u05D9\u05DA \u05E2\u05DD \u05D4\u05E4\u05E8\u05D9\u05D8\u05D9\u05DD \u05E9\u05E0\u05D5\u05EA\u05E8\u05D5.",
+    dictate_items: "\u05D4\u05DB\u05EA\u05D1\u05EA \u05E4\u05E8\u05D9\u05D8\u05D9\u05DD",
+    dictation_unavailable: "\u05D4\u05DB\u05EA\u05D1\u05D4 \u05D0\u05D9\u05E0\u05D4 \u05D6\u05DE\u05D9\u05E0\u05D4. \u05D4\u05E9\u05EA\u05DE\u05E9\u05D5 \u05D1\u05D4\u05DB\u05EA\u05D1\u05D4 \u05D1\u05DE\u05E7\u05DC\u05D3\u05EA \u05D0\u05D5 \u05D4\u05D3\u05D1\u05D9\u05E7\u05D5 \u05E4\u05E8\u05D9\u05D8\u05D9\u05DD.",
+    reminders: "\u05EA\u05D6\u05DB\u05D5\u05E8\u05D5\u05EA",
+    reminder_owned: "Home Assistant \u05DE\u05EA\u05D6\u05DE\u05DF \u05D5\u05E9\u05D5\u05DC\u05D7 \u05EA\u05D6\u05DB\u05D5\u05E8\u05D5\u05EA. \u05D4\u05E9\u05DC\u05DE\u05EA \u05E4\u05E8\u05D9\u05D8 \u05E2\u05D5\u05E6\u05E8\u05EA \u05D0\u05EA \u05D4\u05EA\u05D6\u05DB\u05D5\u05E8\u05D5\u05EA \u05DC\u05DE\u05D5\u05E4\u05E2 \u05D4\u05E0\u05D5\u05DB\u05D7\u05D9.",
+    reminder_admin: "\u05D4\u05D2\u05D3\u05E8\u05EA \u05EA\u05D6\u05DB\u05D5\u05E8\u05D5\u05EA \u05D3\u05D5\u05E8\u05E9\u05EA \u05D4\u05E8\u05E9\u05D0\u05EA \u05DE\u05E0\u05D4\u05DC \u05D1\u05BEHome Assistant.",
+    add_reminder: "\u05D4\u05D5\u05E1\u05E4\u05EA \u05EA\u05D6\u05DB\u05D5\u05E8\u05EA",
+    delete_reminder: "\u05DC\u05DE\u05D7\u05D5\u05E7 \u05EA\u05D6\u05DB\u05D5\u05E8\u05EA?",
+    reminder_type: "\u05E1\u05D5\u05D2 \u05EA\u05D6\u05DB\u05D5\u05E8\u05EA",
+    reminder_due: "\u05E4\u05E8\u05D9\u05D8 \u05E2\u05DD \u05DE\u05D5\u05E2\u05D3 \u05D9\u05E2\u05D3",
+    reminder_recurring: "\u05DE\u05D8\u05DC\u05D4 \u05D7\u05D5\u05D6\u05E8\u05EA",
+    reminder_location: "\u05E7\u05E0\u05D9\u05D5\u05EA \u05D1\u05DB\u05E0\u05D9\u05E1\u05D4 \u05DC\u05D0\u05D6\u05D5\u05E8",
+    person: "\u05D0\u05D3\u05DD",
+    zone: "\u05D0\u05D6\u05D5\u05E8",
+    choose_value: "\u05D9\u05E9 \u05DC\u05D1\u05D7\u05D5\u05E8 \u05E2\u05E8\u05DA",
+    reminder_date: "\u05EA\u05D0\u05E8\u05D9\u05DA \u05D5\u05E9\u05E2\u05EA \u05EA\u05D6\u05DB\u05D5\u05E8\u05EA",
+    recurrence_days: "\u05D7\u05D6\u05E8\u05D4 \u05D1\u05DB\u05DC \u05DE\u05E1\u05E4\u05E8 \u05D9\u05DE\u05D9\u05DD (1\u2013365)",
+    recurring_help: "Home Assistant \u05E4\u05D5\u05EA\u05D7 \u05DE\u05D7\u05D3\u05E9 \u05D0\u05EA \u05D4\u05E4\u05E8\u05D9\u05D8 \u05D1\u05DE\u05D5\u05E4\u05E2 \u05D4\u05D1\u05D0.",
+    repeat_until_complete: "\u05EA\u05D6\u05DB\u05D5\u05E8\u05EA \u05E0\u05D5\u05E1\u05E4\u05EA \u05E2\u05D3 \u05DC\u05D4\u05E9\u05DC\u05DE\u05D4",
+    reminder_once: "\u05E4\u05E2\u05DD \u05D0\u05D7\u05EA \u05D1\u05DB\u05DC \u05DE\u05D5\u05E4\u05E2",
+    notification_target: "\u05E9\u05DC\u05D9\u05D7\u05EA \u05D4\u05D4\u05EA\u05E8\u05D0\u05D4 \u05D0\u05DC",
+    reminder_enabled: "\u05E4\u05E2\u05D9\u05DC",
+    reminder_timezone: "\u05D4\u05D6\u05DE\u05E0\u05D9\u05DD \u05DE\u05D5\u05E6\u05D2\u05D9\u05DD \u05DC\u05E4\u05D9 \u05D0\u05D6\u05D5\u05E8 \u05D4\u05D6\u05DE\u05DF \u05E9\u05DC \u05DE\u05DB\u05E9\u05D9\u05E8 \u05D6\u05D4. \u05DE\u05D8\u05DC\u05D5\u05EA \u05D7\u05D5\u05D6\u05E8\u05D5\u05EA \u05E0\u05E9\u05DE\u05E8\u05D5\u05EA \u05DC\u05E4\u05D9 \u05D4\u05E9\u05E2\u05D4 \u05D4\u05DE\u05E7\u05D5\u05DE\u05D9\u05EA \u05E9\u05DC Home Assistant.",
+    reminder_location_help: "\u05DE\u05E9\u05EA\u05DE\u05E9 \u05D1\u05DB\u05E0\u05D9\u05E1\u05D4 \u05DC\u05D0\u05D6\u05D5\u05E8 \u05E9\u05DC \u05D4\u05D0\u05D3\u05DD \u05E9\u05E0\u05D1\u05D7\u05E8 \u05D1\u05BEHA. \u05D4\u05EA\u05E8\u05D0\u05D4 \u05DC\u05DB\u05DC \u05D4\u05D9\u05D5\u05EA\u05E8 \u05E4\u05E2\u05DD \u05D1\u05E9\u05E2\u05D4 \u05DB\u05E9\u05E0\u05D5\u05EA\u05E8\u05D5 \u05E4\u05E8\u05D9\u05D8\u05D9\u05DD \u05E9\u05DC\u05D0 \u05D4\u05D5\u05E9\u05DC\u05DE\u05D5.",
+    reminder_delivery_review: "\u05D9\u05E9 \u05DC\u05D1\u05D3\u05D5\u05E7 \u05D0\u05EA \u05D4\u05E9\u05DC\u05D9\u05D7\u05D4. \u05E2\u05E8\u05DB\u05D5 \u05D5\u05E9\u05DE\u05E8\u05D5 \u05DB\u05D3\u05D9 \u05DC\u05E0\u05E1\u05D5\u05EA \u05E9\u05D5\u05D1."
   };
 
   // node_modules/@ha-plus/ui/src/dom.js
@@ -701,11 +913,11 @@
     no: "ui.common.no",
     apply: "ui.common.apply"
   };
-  function localize(hass, messages, key, values = {}) {
-    const shortKey = key.replace(/^common\./, "");
+  function localize(hass, messages, key2, values = {}) {
+    const shortKey = key2.replace(/^common\./, "");
     const nativeKey = nativeKeys[shortKey];
     const native = nativeKey && hass?.localize?.(nativeKey);
-    const message = native && native !== nativeKey ? native : messages[key] || en_default2[shortKey] || key;
+    const message = native && native !== nativeKey ? native : messages[key2] || en_default2[shortKey] || key2;
     return String(message).replace(/\{([\w]+)\}/g, (match, name) => {
       if (!Object.hasOwn(values, name)) return match;
       return typeof values[name] === "number" ? formatNumber(hass, values[name]) : String(values[name]);
@@ -1196,7 +1408,8 @@
   }
 
   // src/lists-plus.js
-  var t = (key, values) => localize(haContext(), en_default, key, values);
+  var translated = (hass) => (hass?.locale?.language || hass?.language || "").startsWith("he") ? { ...en_default, ...he_default } : en_default;
+  var t = (key2, values) => localize(haContext(), translated(haContext()), key2, values);
   var LOGO_PATH = "M402.567383 25.999451C448.928314 25.999451 486.567505 63.638489 486.567505 109.999634V401.999084C486.567505 448.360291 448.928314 485.999329 402.567383 485.999329H110.567352C64.206429 485.999329 26.567226 448.360291 26.567226 401.999084V109.999634C26.567226 63.638489 64.206429 25.999451 110.567352 25.999451ZM256.567383 115.249817C178.885193 115.249817 115.817322 178.317688 115.817322 255.999329C115.817322 333.681091 178.885193 396.748962 256.567383 396.748962C334.249542 396.748962 397.317413 333.681091 397.317413 255.999329C397.317413 178.317688 334.249542 115.249817 256.567383 115.249817ZM270.665833 185.999756Q270.665833 200.077209 273.386261 207.716125Q276.697876 217.014648 286.928558 227.245117Q296.993622 237.310364 305.916382 240.487976Q313.078796 243.038513 326.567566 243.038513Q327.260132 243.038513 327.949356 243.100952Q328.63858 243.163391 329.317856 243.287537Q329.997131 243.411682 330.659882 243.596619Q331.322632 243.781555 331.96257 244.025146Q332.602509 244.268738 333.213333 244.568848Q333.824158 244.868958 334.40004 245.222778Q334.975922 245.576599 335.511337 245.980591Q336.046753 246.384583 336.536469 246.834534Q337.026215 247.284973 337.465607 247.7771Q337.904999 248.269226 338.289734 248.798706Q338.674469 249.328186 339.000916 249.889771Q339.327362 250.451355 339.592453 251.039612Q339.857544 251.627869 340.058594 252.237183Q340.259644 252.846497 340.394821 253.471008Q340.529999 254.09552 340.5979 254.729309Q340.665802 255.363098 340.665802 255.999878Q340.665802 256.636658 340.5979 257.270264Q340.529999 257.90387 340.394821 258.52832Q340.259644 259.152771 340.058594 259.762085Q339.857544 260.371399 339.592453 260.959656Q339.327362 261.547913 339.000916 262.109497Q338.674469 262.671082 338.289734 263.200562Q337.904999 263.730042 337.465607 264.22229Q337.026215 264.714539 336.536484 265.164734Q336.046753 265.614929 335.511337 266.018799Q334.975922 266.422668 334.400024 266.776184Q333.824158 267.13031 333.213333 267.43042Q332.602509 267.73053 331.96257 267.974304Q331.322632 268.218079 330.659882 268.402893Q329.997131 268.587708 329.317856 268.711975Q328.63858 268.836243 327.949356 268.898621Q327.260132 268.960999 326.567566 268.960999Q313.057953 268.960999 305.910858 271.506409Q297.004517 274.678406 286.928558 284.754456Q276.708313 294.974182 273.391327 304.288879Q270.665833 311.942322 270.665833 325.999695Q270.665924 326.636414 270.598007 327.270142Q270.53009 327.90387 270.394913 328.528381Q270.259735 329.152893 270.058655 329.762085Q269.857574 330.371277 269.59259 330.959534Q269.327606 331.547791 269.001083 332.109436Q268.674561 332.671082 268.289703 333.200134Q267.904938 333.730042 267.465561 334.222229Q267.026184 334.714417 266.536514 335.164734Q266.046844 335.615051 265.511429 336.01886Q264.976013 336.422668 264.400101 336.776428Q263.824188 337.130188 263.213409 337.430359Q262.602631 337.73053 261.962769 337.974304Q261.322906 338.218079 260.66008 338.402832Q259.997253 338.587585 259.317963 338.711792Q258.638672 338.835999 257.949448 338.898499Q257.260223 338.960999 256.567612 338.960999Q255.875 338.960999 255.18573 338.89856Q254.49646 338.836121 253.817139 338.711853Q253.137817 338.587585 252.475037 338.402832Q251.812256 338.218079 251.172394 337.974304Q250.532532 337.73053 249.921677 337.430359Q249.310822 337.130188 248.73497 336.776428Q248.159119 336.422668 247.623703 336.01886Q247.088287 335.615051 246.598541 335.164734Q246.108795 334.714417 245.669418 334.222229Q245.230042 333.730042 244.845261 333.200623Q244.46048 332.671204 244.133957 332.109497Q243.807434 331.547791 243.542419 330.959656Q243.277405 330.371521 243.076355 329.762207Q242.875305 329.152893 242.740219 328.528381Q242.605133 327.90387 242.537292 327.270142Q242.469452 326.636414 242.469391 325.999695Q242.469391 311.922302 239.748871 304.283264Q236.437347 294.984802 226.206726 284.754456Q216.141174 274.68927 207.21875 271.511658Q200.056488 268.960999 186.567657 268.960999Q185.875031 268.960999 185.185715 268.898621Q184.496399 268.836243 183.817154 268.711975Q183.137909 268.587708 182.475128 268.402893Q181.812347 268.218079 181.172409 267.974304Q180.532471 267.73053 179.921738 267.43042Q179.311005 267.13031 178.735123 266.776489Q178.159241 266.422668 177.623779 266.018799Q177.088318 265.614929 176.598663 265.164734Q176.109009 264.714539 175.669617 264.22229Q175.230225 263.730042 174.845413 263.200562Q174.460602 262.671082 174.134125 262.109497Q173.807648 261.547913 173.542572 260.959656Q173.277496 260.371399 173.076416 259.762085Q172.875336 259.152771 172.74025 258.52832Q172.605164 257.90387 172.537292 257.270264Q172.469421 256.636658 172.469421 255.999878Q172.469421 255.363098 172.537201 254.729309Q172.60498 254.09552 172.740158 253.471008Q172.875336 252.846497 173.076416 252.237183Q173.277496 251.627869 173.54248 251.039612Q173.807465 250.451355 174.133987 249.889771Q174.46051 249.328186 174.845291 248.798706Q175.230072 248.269226 175.669449 247.7771Q176.108826 247.284973 176.598526 246.834656Q177.088226 246.384338 177.623611 245.980469Q178.158997 245.576599 178.734863 245.222473Q179.310822 244.868958 179.9216 244.568848Q180.532379 244.268738 181.172302 244.024719Q181.812347 243.781311 182.475128 243.596436Q183.137909 243.41156 183.817154 243.287476Q184.496399 243.163391 185.185745 243.100891Q185.875092 243.038391 186.567657 243.038513L186.685516 243.038391Q200.108673 243.027283 207.224365 240.493103Q216.130524 237.32135 226.206635 227.245117Q236.426666 217.025635 239.743835 207.710571Q242.469391 200.056763 242.469391 185.999756Q242.469452 185.363098 242.537292 184.72934Q242.605133 184.095581 242.740219 183.471069Q242.875305 182.846558 243.076355 182.237213Q243.277405 181.627869 243.542419 181.039642Q243.807434 180.451416 244.133957 179.889893Q244.46048 179.328369 244.845261 178.798889Q245.230042 178.269409 245.669418 177.777283Q246.108795 177.285156 246.598618 176.834869Q247.08844 176.384583 247.623825 175.980591Q248.15921 175.576599 248.735016 175.2229Q249.310822 174.869202 249.921677 174.56897Q250.532532 174.268738 251.172394 174.025146Q251.812256 173.781555 252.475037 173.59668Q253.137817 173.411804 253.817139 173.287537Q254.49646 173.163269 255.18573 173.100922Q255.875 173.038574 256.567612 173.038574Q257.260223 173.038574 257.949448 173.100983Q258.638672 173.163391 259.317963 173.287598Q259.997253 173.411804 260.66008 173.59668Q261.322906 173.781555 261.962555 174.024963Q262.602631 174.268738 263.213409 174.568878Q263.824188 174.869019 264.400101 175.222809Q264.976013 175.576599 265.511429 175.980591Q266.046844 176.384583 266.536438 176.834595Q267.026184 177.285156 267.465561 177.777283Q267.904938 178.269409 268.289749 178.798889Q268.674561 179.328369 269.001083 179.889893Q269.327606 180.451416 269.59259 181.039642Q269.857574 181.627869 270.058655 182.237213Q270.259735 182.846558 270.394913 183.471069Q270.53009 184.095581 270.598007 184.72934Q270.665924 185.363098 270.665833 185.999756Z";
   window.customIcons = window.customIcons || {};
   window.customIcons["lists-plus"] = {
@@ -1270,8 +1483,8 @@
     return result;
   }
   var ListsView = class extends HTMLElement {
-    _t(key, values) {
-      return localize(this._hass, en_default, key, values);
+    _t(key2, values) {
+      return localize(this._hass, translated(this._hass), key2, values);
     }
     constructor() {
       super();
@@ -1338,6 +1551,8 @@
       if (!this._editor) this._render();
     }
     disconnectedCallback() {
+      this._speech?.abort();
+      this._speech = null;
       this._epoch++;
       clearInterval(this._timer);
       this._timer = null;
@@ -1371,7 +1586,7 @@
     }
     _setBusy(busy) {
       this._busy = busy;
-      for (const control of this.shadowRoot.querySelectorAll("ha-button,mwc-button,ha-icon-button,ha-form,ha-checkbox,ha-input,ha-textfield,button")) {
+      for (const control of this.shadowRoot.querySelectorAll("ha-button,mwc-button,ha-icon-button,ha-form,ha-checkbox,ha-input,ha-textfield,button,input,textarea,select")) {
         if (busy) {
           control._listsWasDisabled = control.disabled;
           control.disabled = true;
@@ -1413,6 +1628,72 @@
           status.setAttribute("alert-type", "error");
           status.textContent = this._error;
         } else this._render();
+      }
+    }
+    async _loadCapture(editor) {
+      let storage;
+      try {
+        storage = await openCaptureStorage();
+        const queue = await CaptureQueue.load(storage, this._data.user_id);
+        if (this._editor !== editor) return;
+        editor.pending = queue.data.pending;
+        this._render();
+      } catch (error) {
+        if (this._editor === editor) {
+          this._error = error.message || this._t("capture_browser_lock");
+          this._render();
+        }
+      } finally {
+        storage?.close();
+      }
+    }
+    async _captureSave(list, summaries, resume = false, abandon = false) {
+      if (this._busy) return;
+      this._setBusy(true);
+      try {
+        if (!this._data.user_id) throw new Error(this._t("capture_browser_lock"));
+        const storage = await openCaptureStorage();
+        try {
+          const queue = await CaptureQueue.load(storage, this._data.user_id);
+          if (abandon) await queue.abandon((request) => this._hass.callWS(request));
+          if (!resume && !abandon) await queue.stage(list.id, summaries);
+          await queue.flush((request) => this._hass.callWS(request));
+        } finally {
+          storage.close();
+        }
+        this._editor = null;
+        this._error = "";
+        this._busy = false;
+        await this._refresh();
+        this._render();
+        showToast(this, this._t("capture_saved"));
+      } catch (error) {
+        this._error = error.message || this._t("capture_retry");
+        this._busy = false;
+        this._render();
+        if (this._editor?.type === "capture") this._loadCapture(this._editor);
+      }
+    }
+    async _reminderSave(list, rule, existing) {
+      if (this._busy) return;
+      this._setBusy(true);
+      try {
+        await this._hass.callWS({
+          type: "lists_plus/reminder",
+          list_id: list.id,
+          rule_id: existing?.id || operationId(),
+          revision: existing?.revision || 0,
+          rule
+        });
+        this._editor = null;
+        this._error = "";
+        this._busy = false;
+        await this._refresh();
+        this._render();
+      } catch (error) {
+        this._busy = false;
+        this._error = error.message;
+        this._render();
       }
     }
     async _createList(name) {
@@ -1464,9 +1745,12 @@
       this._returnFocus = returnFocus;
       this._error = "";
       this._render();
+      if (editor.type === "capture") this._loadCapture(editor);
     }
     _close() {
       if (this._busy) return;
+      this._speech?.abort();
+      this._speech = null;
       this._editor = null;
       this._error = "";
       this._render();
@@ -1638,9 +1922,14 @@
           event.preventDefault();
           add();
         });
-        form.append(input, iconButton(this._t("add_item"), "mdi:plus", add));
+        form.append(
+          input,
+          iconButton(this._t("add_item"), "mdi:plus", add),
+          iconButton(this._t("bulk_capture"), "mdi:playlist-plus", () => this._open({ type: "capture", list, raw: this._newItem || "" }))
+        );
         card.append(form);
       }
+      if (this._data.reminders_version === 1) card.append(actionButton(this._t("reminders"), () => this._open({ type: "reminders", list })));
       const items = el("div", void 0, "items");
       card.append(items);
       content.append(card);
@@ -1711,7 +2000,7 @@
       const list = editor.list;
       const dialog = el("ha-dialog", void 0, "dialog");
       const modern = "headerTitle" in dialog;
-      const title = this._t({ item: "item_details", list: "list_settings", field: "add_custom_field", confirm: "confirm_deletion", rename: "rename_item", create_list: "create_list" }[editor.type]);
+      const title = this._t({ capture: "bulk_capture", reminders: "reminders", reminder: "reminders", item: "item_details", list: "list_settings", field: "add_custom_field", confirm: "confirm_deletion", rename: "rename_item", create_list: "create_list" }[editor.type]);
       dialog.heading = title;
       dialog.headerTitle = title;
       dialog.setAttribute("header-title", title);
@@ -1723,6 +2012,7 @@
         if (this._busy) event.preventDefault();
       });
       const body = el("div", void 0, "dialog-content");
+      body.style.cssText = "display:block;max-width:100%;overflow-wrap:anywhere";
       const status = el("ha-alert", this._error || "");
       status.setAttribute("alert-type", "error");
       status.setAttribute("role", "status");
@@ -1731,7 +2021,216 @@
       body.append(status);
       const form = el("form");
       let save;
-      if (editor.type === "create_list") {
+      if (editor.type === "capture") {
+        form.append(el("p", this._t("capture_hint")));
+        const input = el("textarea");
+        input.value = editor.raw || "";
+        input.rows = 5;
+        input.style.cssText = "box-sizing:border-box;width:100%;font:inherit;color:inherit;background:var(--card-background-color);border:1px solid var(--divider-color);padding:12px";
+        input.setAttribute("aria-label", this._t("bulk_capture"));
+        input.addEventListener("input", () => {
+          editor.raw = input.value;
+          editor.entries = null;
+        });
+        form.append(input);
+        const suggestions = el("div");
+        for (const value of list.suggestions || []) suggestions.append(actionButton(value.summary, () => {
+          editor.raw = `${input.value.trim()}${input.value.trim() ? "\n" : ""}${captureInput(value.summary)}`;
+          editor.entries = null;
+          this._render();
+        }));
+        form.append(suggestions);
+        const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+        if (Recognition) form.append(actionButton(this._t("dictate_items"), () => {
+          this._speech?.abort();
+          const speech = new Recognition();
+          this._speech = speech;
+          speech.lang = this._hass.locale?.language || navigator.language;
+          speech.onresult = (event) => {
+            if (this._editor !== editor) return;
+            editor.raw = `${input.value.trim()}${input.value.trim() ? "\n" : ""}${event.results[0][0].transcript}`;
+            editor.entries = null;
+            this._render();
+          };
+          speech.onerror = () => {
+            this._error = this._t("dictation_unavailable");
+            this._render();
+          };
+          try {
+            speech.start();
+          } catch (_) {
+            this._error = this._t("dictation_unavailable");
+            this._render();
+          }
+        }));
+        if (editor.entries) {
+          form.append(el("p", this._t("capture_review")));
+          editor.entries.forEach((entry, index) => {
+            const row = el("div");
+            const check = el("input");
+            check.setAttribute("aria-label", entry.summary);
+            check.type = "checkbox";
+            check.checked = entry.selected;
+            check.addEventListener("change", () => {
+              editor.entries[index].selected = check.checked;
+            });
+            const name = el("input");
+            name.value = entry.summary;
+            name.required = true;
+            name.maxLength = 2e3;
+            name.setAttribute("aria-label", this._t("item_name"));
+            name.addEventListener("input", () => {
+              entry.summary = name.value;
+            });
+            row.append(check, name);
+            if (entry.duplicate) row.append(el("span", this._t("likely_duplicate")));
+            form.append(row);
+          });
+        }
+        if (editor.pending?.length) {
+          for (const operation of editor.pending) {
+            const name = this._data.lists.find((value) => value.id === operation.list_id)?.name || operation.list_id;
+            form.append(el("p", `${name} \xB7 ${operation.payload.summary}${operation.status ? ` \xB7 ${operation.status}` : ""}`));
+          }
+          form.append(el("p", this._t("capture_retry")), actionButton(this._t("resume_capture"), () => this._captureSave(list, [], true)));
+          if (editor.pending[0].status) form.append(actionButton(this._t("abandon_capture_item"), () => {
+            if (window.confirm(this._t("capture_abandon_confirm"))) this._captureSave(list, [], true, true);
+          }));
+        }
+        save = () => {
+          if (!editor.entries) {
+            const values = parseCapture(input.value);
+            if (!values.length || values.length > 100 || values.some((value) => [...value].length > 1e3)) {
+              this._error = this._t("capture_limit");
+              this._render();
+              return;
+            }
+            editor.raw = input.value;
+            editor.entries = values.map((summary, index) => {
+              const duplicate = list.items.some((item) => item.status !== "completed" && likelyDuplicate(summary, item.summary)) || values.slice(0, index).some((value) => likelyDuplicate(summary, value));
+              return { summary, duplicate, selected: !duplicate };
+            });
+            this._render();
+            return;
+          }
+          const selected = editor.entries.filter((entry) => entry.selected).map((entry) => entry.summary);
+          if (!selected.length) {
+            this._error = this._t("capture_select");
+            this._render();
+            return;
+          }
+          this._captureSave(list, selected);
+        };
+      } else if (editor.type === "reminders") {
+        form.append(el("p", this._t("reminder_owned")));
+        if (!this._data.admin) form.append(el("p", this._t("reminder_admin")));
+        for (const rule of list.reminders || []) {
+          const item = list.items.find((item2) => item2.uid === rule.uid);
+          form.append(actionButton(`${this._t(`reminder_${rule.kind}`)} \xB7 ${item?.summary || rule.zone_id || ""} \xB7 ${rule.due ? formatDateTime(this._hass, rule.due) : ""}`, () => this._open({ type: "reminder", list, rule }), !this._data.admin));
+          if (rule.error) form.append(el("p", `${this._t("reminder_delivery_review")} ${rule.error}`));
+        }
+        if (this._data.admin) form.append(actionButton(this._t("add_reminder"), () => this._open({ type: "reminder", list })));
+        save = () => this._close();
+      } else if (editor.type === "reminder") {
+        const existing = editor.rule;
+        editor.ruleId ||= existing?.id || operationId();
+        const draft = editor.draft ||= {
+          kind: existing?.kind || "due",
+          uid: existing?.uid || list.items[0]?.uid,
+          due: existing?.due || new Date(Date.now() + 36e5).toISOString(),
+          interval_days: existing?.interval_days || 1,
+          repeat_minutes: existing?.repeat_minutes || 0,
+          person_id: existing?.person_id,
+          zone_id: existing?.zone_id,
+          notify_service: existing?.notify_service || "persistent_notification.create",
+          enabled: existing?.enabled ?? true
+        };
+        form.append(el("p", this._t("reminder_owned")));
+        const picker = (label, value, choices, change) => {
+          const wrapper = el("label", label);
+          const select = el("select");
+          select.setAttribute("aria-label", label);
+          const placeholder = el("option", this._t("choose_value"));
+          placeholder.value = "";
+          select.append(placeholder);
+          for (const [id, name] of choices) {
+            const option = el("option", name);
+            option.value = id;
+            option.selected = id === value;
+            select.append(option);
+          }
+          select.required = true;
+          select.addEventListener("change", () => change(select.value));
+          wrapper.append(select);
+          form.append(wrapper);
+        };
+        picker(this._t("reminder_type"), draft.kind, ["due", "recurring", "location"].map((kind) => [kind, this._t(`reminder_${kind}`)]), (value) => {
+          draft.kind = value;
+          this._render();
+        });
+        if (draft.kind === "location") {
+          picker(this._t("person"), draft.person_id, this._data.people.map((value) => [value.id, value.name]), (value) => {
+            draft.person_id = value;
+          });
+          picker(this._t("zone"), draft.zone_id, (this._data.reminder_options?.zones || []).map((value) => [value.id, value.name]), (value) => {
+            draft.zone_id = value;
+          });
+          form.append(el("p", this._t("reminder_location_help")));
+        } else {
+          picker(this._t("item_name"), draft.uid, list.items.map((value) => [value.uid, `${value.summary} \xB7 ${value.uid}`]), (value) => {
+            draft.uid = value;
+          });
+          const date = el("input");
+          date.type = "datetime-local";
+          date.required = true;
+          const local = new Date(draft.due);
+          date.value = new Date(local.getTime() - local.getTimezoneOffset() * 6e4).toISOString().slice(0, 16);
+          date.setAttribute("aria-label", this._t("reminder_date"));
+          date.addEventListener("change", () => {
+            if (date.value) draft.due = new Date(date.value).toISOString();
+          });
+          form.append(date);
+          form.append(el("p", this._t("reminder_timezone")));
+          if (draft.kind === "recurring") {
+            const interval = el("input");
+            interval.type = "number";
+            interval.min = 1;
+            interval.max = 365;
+            interval.required = true;
+            interval.value = draft.interval_days;
+            interval.setAttribute("aria-label", this._t("recurrence_days"));
+            interval.addEventListener("input", () => {
+              draft.interval_days = Number(interval.value);
+            });
+            form.append(el("label", this._t("recurrence_days")), interval, el("p", this._t("recurring_help")));
+          }
+          picker(this._t("repeat_until_complete"), String(draft.repeat_minutes), [0, 15, 30, 60, 1440].map((value) => [String(value), value ? `${value} min` : this._t("reminder_once")]), (value) => {
+            draft.repeat_minutes = Number(value);
+          });
+        }
+        picker(this._t("notification_target"), draft.notify_service, (this._data.reminder_options?.notifications || []).map((value) => [value, value]), (value) => {
+          draft.notify_service = value;
+        });
+        const enabled = el("input");
+        enabled.type = "checkbox";
+        enabled.checked = draft.enabled;
+        enabled.addEventListener("change", () => {
+          draft.enabled = enabled.checked;
+        });
+        const enabledLabel = el("label", this._t("reminder_enabled"));
+        enabledLabel.append(enabled);
+        form.append(enabledLabel);
+        if (existing) form.append(actionButton(this._t("delete_reminder"), () => {
+          if (window.confirm(this._t("delete_reminder"))) this._reminderSave(list, null, existing);
+        }));
+        save = () => {
+          if (form.reportValidity && !form.reportValidity()) return;
+          const rule = { kind: draft.kind, enabled: draft.enabled, notify_service: draft.notify_service };
+          if (draft.kind === "location") Object.assign(rule, { person_id: draft.person_id, zone_id: draft.zone_id });
+          else Object.assign(rule, { uid: draft.uid, due: draft.due, repeat_minutes: draft.repeat_minutes, ...draft.kind === "recurring" ? { interval_days: draft.interval_days } : {} });
+          this._reminderSave(list, rule, { id: editor.ruleId, revision: existing?.revision || 0 });
+        };
+      } else if (editor.type === "create_list") {
         let name = editor.name || "";
         form.append(el("p", this._t("create_list_description")));
         form.append(nativeForm(this._hass, [{ name: "name", label: this._t("list_name"), required: true, selector: { text: {} } }], { name }, (data) => {
@@ -1805,6 +2304,7 @@
       }
       const submit = () => {
         if (this._busy) return;
+        if (form.reportValidity && !form.reportValidity()) return;
         const invalid = [...form.querySelectorAll("ha-form")].some((fields) => fields.reportValidity && !fields.reportValidity());
         if (!invalid) save();
       };
@@ -1815,7 +2315,7 @@
       body.append(form);
       dialog.append(body);
       const cancel = actionButton(this._t("common.cancel"), () => this._close());
-      const confirm = actionButton(editor.type === "confirm" ? this._t("common.delete") : editor.type === "create_list" ? this._t("create_list") : this._t("common.save"), submit, this._busy, editor.type === "confirm" ? "danger" : "accent");
+      const confirm = actionButton(editor.type === "capture" ? this._t(editor.entries ? "capture_save" : "capture_review_button") : editor.type === "reminders" ? this._t("common.close") : editor.type === "confirm" ? this._t("common.delete") : editor.type === "create_list" ? this._t("create_list") : this._t("common.save"), submit, this._busy, editor.type === "confirm" ? "danger" : "accent");
       if (modern) {
         const footer = el("div", void 0, "dialog-footer");
         footer.slot = "footer";
