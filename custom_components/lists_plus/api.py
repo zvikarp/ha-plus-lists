@@ -124,7 +124,7 @@ async def sync_command(hass, connection, msg):
         vol.Required("list_id"): vol.All(str, vol.Length(min=1, max=64)),
         vol.Required("rule_id"): vol.All(str, vol.Length(min=1, max=64)),
         vol.Required("revision"): vol.All(int, vol.Range(min=0)),
-        vol.Optional("rule"): vol.Any(dict, None),
+        vol.Required("rule"): vol.Any(dict, None),
     }
 )
 @websocket_api.async_response
