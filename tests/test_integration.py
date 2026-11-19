@@ -287,3 +287,15 @@ async def test_real_frontend_registration(hass, loaded, hass_client):
     await async_register_frontend(hass)
     assert "ha-plus-lists" in hass.data["frontend_panels"]
     async_unregister_frontend(hass)
+
+
+async def test_incomplete_provider_response_keeps_snapshot_and_metadata(hass, loaded):
+    manager, todo, _ = loaded
+    context = Context()
+    await manager.execute(todo.entity_id, "set_list", {"group": "Keep"}, context, 0)
+    with patch.object(type(hass.services), "async_call", return_value={}):
+        result = await manager.snapshot(context)
+    assert len(result["lists"]) == 1
+    assert result["lists"][0]["metadata"]["group"] == "Keep"
+    assert result["lists"][0]["items"] == []
+    assert "did not return items" in result["lists"][0]["error"]

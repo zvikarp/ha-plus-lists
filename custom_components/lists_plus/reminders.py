@@ -329,6 +329,9 @@ class Reminders:
             return
         if self.stopped:
             return
+        target = rule["notify_service"]
+        if target not in self.options()["notifications"]:
+            raise ValueError("The notification target is unavailable")
         rule.update(
             attempt=slot,
             error="Delivery is pending or uncertain. Check notifications before editing and saving to retry.",
@@ -340,9 +343,6 @@ class Reminders:
         await self.persist(updated)
         if self.stopped:
             return
-        target = rule["notify_service"]
-        if target not in self.options()["notifications"]:
-            raise ValueError("The notification target is unavailable")
         tag = f"ha-plus-lists-{rule['id']}"
         payload = {"title": "HA+ Lists", "message": message}
         if target == "persistent_notification.create":
@@ -370,7 +370,7 @@ class Reminders:
         ):
             return
         for rule in self.data.values():
-            if rule["kind"] != "location" or rule["person_id"] != event.data.get(
+            if rule.get("kind") != "location" or rule["person_id"] != event.data.get(
                 "entity_id"
             ):
                 continue
