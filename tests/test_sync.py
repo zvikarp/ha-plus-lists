@@ -173,3 +173,27 @@ async def test_concurrent_replay_and_revoked_permission(loaded, hass_admin_user)
         assert (await manager.sync.execute({**request, "abandon": True}, context))[
             "status"
         ] == "applied"
+
+
+@pytest.mark.parametrize("action", ["add_item", "complete_item"])
+async def test_unavailable_preflight_does_not_consume_sync_sequence(
+    loaded, hass_admin_user, action
+):
+    manager, todo, _ = loaded
+    context = Context(user_id=hass_admin_user.id)
+    item = (await manager.snapshot(context))["lists"][0]["items"][0]
+    request = await command(manager, context)
+    if action == "complete_item":
+        request.update(
+            action=action,
+            payload={"uid": item["uid"], "completed": True},
+            etag=item["sync_etag"],
+        )
+    todo._attr_available = False
+    todo.async_write_ha_state()
+    with pytest.raises(ValueError, match="unavailable"):
+        await manager.sync.execute(request, context)
+    assert manager.sync.data == {}
+    todo._attr_available = True
+    todo.async_write_ha_state()
+    assert (await manager.sync.execute(request, context))["status"] == "applied"

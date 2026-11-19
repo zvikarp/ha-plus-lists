@@ -89,7 +89,10 @@ class SyncJournal:
             if request.get("abandon"):
                 await self.save(key, record)
                 return {"status": "abandoned"}
+            started = False
             try:
+                if request["action"] == "add_item":
+                    self.manager.require_available_list(entry.entity_id)
                 if request["action"] in ("rename_item", "complete_item", "delete_item"):
                     items = await self.manager.items(entry.entity_id, context)
                     item = next(
@@ -112,6 +115,7 @@ class SyncJournal:
                 # process crash must never permit a second provider invocation.
                 record["status"] = "uncertain"
                 await self.save(key, record)
+                started = True
                 await self.manager.execute(
                     entry.entity_id,
                     request["action"],
@@ -124,6 +128,10 @@ class SyncJournal:
             except Unauthorized:
                 raise
             except (ValueError, HomeAssistantError) as err:
+                if not started:
+                    # Read failures cannot have applied the operation. Retry the
+                    # same sequence once the provider is available again.
+                    raise
                 # Providers can raise after applying an edit. Preserve uncertainty.
                 record = {**record, "status": "uncertain", "message": str(err)}
             else:

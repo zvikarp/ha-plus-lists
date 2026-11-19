@@ -334,3 +334,46 @@ async def test_suggestion_history_failure_does_not_fail_an_applied_add(hass, loa
         )
     assert sum(item.summary == "Rice" for item in todo.todo_items) == 1
     assert not manager.capture.data
+
+
+async def test_deleted_reminder_does_not_block_other_location_rules(
+    hass, loaded, notifications
+):
+    manager, todo, _ = loaded
+    now = dt_util.utcnow()
+    dead, list_id = await configure(manager, todo, now)
+    await manager.reminders.configure(list_id, dead["id"], 1, None, Context())
+    hass.states.async_set("person.shop", "not_home")
+    hass.states.async_set("zone.store", "0", {"friendly_name": "Store"})
+    await configure(
+        manager,
+        todo,
+        now,
+        kind="location",
+        person_id="person.shop",
+        zone_id="zone.store",
+    )
+    await hass.async_block_till_done()
+    hass.states.async_set("person.shop", "Store")
+    await hass.async_block_till_done()
+    assert len(notifications) == 1
+
+
+async def test_missing_notification_target_does_not_claim_occurrence(
+    hass, loaded, notifications
+):
+    manager, todo, _ = loaded
+    now = dt_util.utcnow()
+    rule, _ = await configure(manager, todo, now, repeat_minutes=0)
+    hass.services.async_remove("notify", "mobile_app_test")
+    await manager.reminders.deliver(now)
+    assert manager.reminders.data[rule["id"]]["attempt"] is None
+    assert "unavailable" in manager.reminders.data[rule["id"]]["error"]
+
+    async def notify(call):
+        notifications.append(call.data)
+
+    hass.services.async_register("notify", "mobile_app_test", notify)
+    await manager.reminders.deliver(now + timedelta(minutes=1))
+    assert len(notifications) == 1
+    assert manager.reminders.data[rule["id"]]["error"] is None

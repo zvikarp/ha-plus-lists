@@ -1,6 +1,7 @@
 """Bridge existing to-do services to a separately owned metadata store."""
 
 import logging
+from collections.abc import Mapping
 
 from homeassistant.auth.permissions.const import POLICY_CONTROL, POLICY_READ
 from homeassistant.exceptions import HomeAssistantError, Unauthorized
@@ -64,12 +65,15 @@ class ListsManager:
             for area in ar.async_get(self.hass).async_list_areas()
         ]
 
-    async def items(self, entity_id, context):
+    def require_available_list(self, entity_id):
         state = self.hass.states.get(entity_id)
         if state is None or state.state in ("unavailable", "unknown"):
             raise ValueError(
                 "This list is unavailable; its metadata has been preserved"
             )
+
+    async def items(self, entity_id, context):
+        self.require_available_list(entity_id)
         result = await self.hass.services.async_call(
             "todo",
             "get_items",
@@ -78,7 +82,13 @@ class ListsManager:
             return_response=True,
             context=context,
         )
-        return result[entity_id]["items"]
+        entry = result.get(entity_id) if isinstance(result, Mapping) else None
+        items = entry.get("items") if isinstance(entry, Mapping) else None
+        if not isinstance(items, list):
+            raise ValueError(
+                "This list did not return items; its metadata has been preserved"
+            )
+        return items
 
     async def snapshot(self, context):
         user = await self.user(context)
